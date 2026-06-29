@@ -13,6 +13,7 @@ use error::ProxmoxError;
 pub struct ProxmoxProvider {
     client: ProxmoxClient,
     default_storage: String,
+    default_bridge: String,
 }
 
 impl ProxmoxProvider {
@@ -22,6 +23,7 @@ impl ProxmoxProvider {
         token_secret: &str,
         node: &str,
         default_storage: &str,
+        default_bridge: &str,
         tls_insecure: bool,
     ) -> Result<Self, ProviderError> {
         let client = ProxmoxClient::new(url, token_id, token_secret, node, tls_insecure)
@@ -29,6 +31,7 @@ impl ProxmoxProvider {
         Ok(Self {
             client,
             default_storage: default_storage.to_string(),
+            default_bridge: default_bridge.to_string(),
         })
     }
 }
@@ -44,7 +47,7 @@ impl InfraProvider for ProxmoxProvider {
     }
 
     async fn create_vm(&self, spec: VmSpec) -> Result<VmHandle, ProviderError> {
-        vm::create_vm(&self.client, &self.default_storage, &spec)
+        vm::create_vm(&self.client, &self.default_storage, &self.default_bridge, &spec)
             .await
             .map_err(Into::into)
     }

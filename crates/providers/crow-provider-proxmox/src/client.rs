@@ -33,6 +33,7 @@ impl ProxmoxClient {
     ) -> Result<Self, ProxmoxError> {
         let http = Client::builder()
             .danger_accept_invalid_certs(tls_insecure)
+            .timeout(Duration::from_secs(30)) // fix: per-request timeout so task-level deadlines actually fire
             .build()?;
         Ok(Self {
             http,
@@ -58,6 +59,7 @@ impl ProxmoxClient {
             .ok_or_else(|| ProxmoxError::Parse("empty data field".into()))
     }
 
+    /// POST that expects a non-null data field in the response.
     pub async fn post<B: Serialize + ?Sized, T: DeserializeOwned>(
         &self,
         path: &str,
@@ -73,6 +75,23 @@ impl ProxmoxClient {
         let env: PveEnvelope<T> = self.parse_raw(resp).await?;
         env.data
             .ok_or_else(|| ProxmoxError::Parse("empty data field".into()))
+    }
+
+    /// POST where the response data may be null (sync Proxmox operations return {"data":null}).
+    pub async fn post_opt<B: Serialize + ?Sized, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<Option<T>, ProxmoxError> {
+        let resp = self
+            .http
+            .post(self.url(path))
+            .header("Authorization", &self.auth)
+            .form(body)
+            .send()
+            .await?;
+        let env: PveEnvelope<T> = self.parse_raw(resp).await?;
+        Ok(env.data)
     }
 
     pub async fn post_multipart<T: DeserializeOwned>(
@@ -125,7 +144,6 @@ impl ProxmoxClient {
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        // DELETE can return a UPID (string) or null
         let env: PveEnvelope<Option<String>> = self.parse_raw(resp).await?;
         Ok(env.data.flatten())
     }
@@ -162,10 +180,13 @@ impl ProxmoxClient {
         loop {
             let status: TaskStatus = self.get(&path).await?;
             if status.status == "stopped" {
-                return match status.exit_status.as_deref() {
-                    Some("OK") | None => Ok(()),
-                    Some(msg) => Err(ProxmoxError::TaskFailed(msg.to_string())),
-                };
+                // exitstatus can be transiently absent if the task runner hasn't
+                // flushed its state yet — treat None as "not settled, poll again".
+                match status.exit_status.as_deref() {
+                    Some("OK") => return Ok(()),
+                    Some(msg) => return Err(ProxmoxError::TaskFailed(msg.to_string())),
+                    None => {}
+                }
             }
             if Instant::now() > deadline {
                 return Err(ProxmoxError::TaskTimeout(timeout_secs));

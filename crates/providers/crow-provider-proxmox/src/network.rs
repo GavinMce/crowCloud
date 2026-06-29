@@ -80,7 +80,7 @@ pub async fn delete_network(
 }
 
 fn prefix_to_mask(prefix: &str) -> String {
-    let bits: u32 = prefix.parse().unwrap_or(24);
+    let bits: u32 = prefix.parse().unwrap_or(24).min(32);
     let mask = if bits == 0 {
         0u32
     } else {
