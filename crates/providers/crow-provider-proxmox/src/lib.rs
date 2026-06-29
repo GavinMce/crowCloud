@@ -1,9 +1,5 @@
 use async_trait::async_trait;
-use crow_core::{
-    traits::InfraProvider,
-    types::*,
-    ProviderError,
-};
+use crow_core::{traits::InfraProvider, types::*, ProviderError};
 
 pub struct ProxmoxProvider {
     pub url: String,
@@ -16,8 +12,12 @@ pub struct ProxmoxProvider {
 
 #[async_trait]
 impl InfraProvider for ProxmoxProvider {
-    fn provider_type(&self) -> &'static str { "proxmox" }
-    fn name(&self) -> &str { &self.url }
+    fn provider_type(&self) -> &'static str {
+        "proxmox"
+    }
+    fn name(&self) -> &str {
+        &self.url
+    }
 
     async fn create_vm(&self, _spec: VmSpec) -> Result<VmHandle, ProviderError> {
         todo!("proxmox create_vm")

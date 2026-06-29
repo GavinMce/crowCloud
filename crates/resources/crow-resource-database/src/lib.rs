@@ -10,7 +10,9 @@ pub struct DatabaseDriver;
 
 #[async_trait]
 impl ResourceDriver for DatabaseDriver {
-    fn resource_type(&self) -> &'static str { "Database" }
+    fn resource_type(&self) -> &'static str {
+        "Database"
+    }
 
     fn config_schema(&self) -> Value {
         serde_json::json!({}) // TODO: JSON Schema for UI form generation
@@ -19,10 +21,18 @@ impl ResourceDriver for DatabaseDriver {
     async fn provision(&self, _ctx: &ProvisionCtx) -> Result<ResourceHandle, DriverError> {
         todo!("Database provision")
     }
-    async fn deprovision(&self, _ctx: &ProvisionCtx, _handle: &ResourceHandle) -> Result<(), DriverError> {
+    async fn deprovision(
+        &self,
+        _ctx: &ProvisionCtx,
+        _handle: &ResourceHandle,
+    ) -> Result<(), DriverError> {
         todo!("Database deprovision")
     }
-    async fn reconcile(&self, _ctx: &ProvisionCtx, _handle: &ResourceHandle) -> Result<ResourcePhase, DriverError> {
+    async fn reconcile(
+        &self,
+        _ctx: &ProvisionCtx,
+        _handle: &ResourceHandle,
+    ) -> Result<ResourcePhase, DriverError> {
         todo!("Database reconcile")
     }
     async fn endpoints(&self, _handle: &ResourceHandle) -> Result<Vec<Endpoint>, DriverError> {

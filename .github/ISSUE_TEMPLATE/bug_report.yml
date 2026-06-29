@@ -1,0 +1,60 @@
+name: Bug Report
+description: Something isn't working correctly
+labels: ["bug", "triage"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - API (crow-api)
+        - Operator (crow-operator)
+        - CLI (crow)
+        - Frontend
+        - Proxmox Provider
+        - Hetzner Provider
+        - VPS Agent
+        - Networking / Tunnel
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `crow --version` or the Git commit SHA
+      placeholder: "0.1.0 / abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. crow vm create ...
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: API logs, operator logs, or CLI output
+      render: shell

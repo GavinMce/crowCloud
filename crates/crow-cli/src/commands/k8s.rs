@@ -18,7 +18,11 @@ pub enum K8sSubcommand {
     /// Delete a cluster
     Delete { name: String },
     /// Scale worker nodes
-    Scale { name: String, #[arg(long)] workers: u32 },
+    Scale {
+        name: String,
+        #[arg(long)]
+        workers: u32,
+    },
     /// Print or merge kubeconfig
     Kubeconfig(KubeconfigArgs),
     /// Expose cluster ingress externally

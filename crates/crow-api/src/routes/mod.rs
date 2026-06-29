@@ -1,5 +1,5 @@
-use axum::Router;
 use crate::AppState;
+use axum::Router;
 
 mod auth;
 mod domains;
@@ -13,7 +13,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .nest("/auth", auth::router())
         .nest("/projects", projects::router())
-        .nest("/projects/:project/resource-groups", resource_groups::router())
+        .nest(
+            "/projects/:project/resource-groups",
+            resource_groups::router(),
+        )
         .nest(
             "/projects/:project/resource-groups/:rg/resources",
             resources::router(),

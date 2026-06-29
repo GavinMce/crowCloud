@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::Cli;
+use anyhow::Result;
 
 pub mod auth;
 pub mod context;

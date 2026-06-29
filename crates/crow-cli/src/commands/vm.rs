@@ -26,7 +26,11 @@ pub enum VmSubcommand {
     /// Expose a VM port externally
     Expose(ExposeArgs),
     /// Remove external exposure
-    Unexpose { name: String, #[arg(long)] domain: Option<String> },
+    Unexpose {
+        name: String,
+        #[arg(long)]
+        domain: Option<String>,
+    },
 }
 
 #[derive(Args)]
