@@ -1,0 +1,19 @@
+[package]
+name = "crow-auth"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+crow-db = { path = "../crow-db" }
+
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+jsonwebtoken = "9"
+argon2 = "0.5"

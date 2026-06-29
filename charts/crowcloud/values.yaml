@@ -1,0 +1,21 @@
+api:
+  image: ghcr.io/gavinmce/crowcloud-api:latest
+  replicas: 1
+  port: 8080
+  env:
+    DATABASE_URL: ""  # set via secret
+    JWT_SECRET: ""    # set via secret
+
+operator:
+  image: ghcr.io/gavinmce/crowcloud-operator:latest
+  replicas: 1
+
+postgres:
+  enabled: true
+  storageSize: 10Gi
+  storageClass: ""
+
+ingress:
+  enabled: false
+  host: ""
+  tls: false
