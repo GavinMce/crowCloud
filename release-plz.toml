@@ -1,3 +1,10 @@
 [workspace]
 publish = false
 changelog_path = "CHANGELOG.md"
+
+# crow-api is the workspace release driver: its tag (v{{ version }}) is what
+# triggers cd_publish.yml to build Docker images, CLI binaries, and Helm chart.
+# All other crates are versioned by release-plz but don't create separate releases.
+[[package]]
+name = "crow-api"
+git_tag_name = "v{{ version }}"
