@@ -47,13 +47,20 @@ impl InfraProvider for ProxmoxProvider {
     }
 
     async fn create_vm(&self, spec: VmSpec) -> Result<VmHandle, ProviderError> {
-        vm::create_vm(&self.client, &self.default_storage, &self.default_bridge, &spec)
-            .await
-            .map_err(Into::into)
+        vm::create_vm(
+            &self.client,
+            &self.default_storage,
+            &self.default_bridge,
+            &spec,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     async fn delete_vm(&self, handle: &VmHandle) -> Result<(), ProviderError> {
-        vm::delete_vm(&self.client, handle).await.map_err(Into::into)
+        vm::delete_vm(&self.client, handle)
+            .await
+            .map_err(Into::into)
     }
 
     async fn vm_status(&self, handle: &VmHandle) -> Result<VmStatus, ProviderError> {

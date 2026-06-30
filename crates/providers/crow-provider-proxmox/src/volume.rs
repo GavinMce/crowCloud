@@ -36,13 +36,10 @@ pub async fn delete_volume(
     let volid = &handle.provider_id;
 
     // Extract storage name from the volid prefix.
-    let storage = volid
-        .split(':')
-        .next()
-        .ok_or_else(|| ProxmoxError::Api {
-            status: 400,
-            message: format!("invalid volid '{volid}': expected '<storage>:<name>'"),
-        })?;
+    let storage = volid.split(':').next().ok_or_else(|| ProxmoxError::Api {
+        status: 400,
+        message: format!("invalid volid '{volid}': expected '<storage>:<name>'"),
+    })?;
 
     let encoded_volid = urlencoding::encode(volid);
     let upid = client

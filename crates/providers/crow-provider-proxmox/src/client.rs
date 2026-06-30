@@ -112,7 +112,11 @@ impl ProxmoxClient {
     }
 
     /// PUT with form body; returns nothing on success.
-    pub async fn put<B: Serialize + ?Sized>(&self, path: &str, body: &B) -> Result<(), ProxmoxError> {
+    pub async fn put<B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<(), ProxmoxError> {
         let resp = self
             .http
             .put(self.url(path))
@@ -165,8 +169,7 @@ impl ProxmoxClient {
                 message,
             });
         }
-        serde_json::from_str::<T>(&text)
-            .map_err(|e| ProxmoxError::Parse(format!("{e}: {text}")))
+        serde_json::from_str::<T>(&text).map_err(|e| ProxmoxError::Parse(format!("{e}: {text}")))
     }
 
     /// Block until a Proxmox task UPID finishes or the timeout is reached.

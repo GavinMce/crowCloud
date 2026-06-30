@@ -40,15 +40,15 @@ pub async fn create_network(
     }
 
     client
-        .post::<_, serde_json::Value>(
-            &format!("/nodes/{}/network", client.node),
-            &params,
-        )
+        .post::<_, serde_json::Value>(&format!("/nodes/{}/network", client.node), &params)
         .await?;
 
     // Apply the pending network configuration.
     client
-        .put(&format!("/nodes/{}/network", client.node), &[] as &[(&str, &str)])
+        .put(
+            &format!("/nodes/{}/network", client.node),
+            &[] as &[(&str, &str)],
+        )
         .await?;
 
     Ok(NetworkHandle {
@@ -66,14 +66,14 @@ pub async fn delete_network(
     info!("deleting Proxmox bridge '{iface}' on node {}", client.node);
 
     client
-        .delete(
-            &format!("/nodes/{}/network/{iface}", client.node),
-            &[],
-        )
+        .delete(&format!("/nodes/{}/network/{iface}", client.node), &[])
         .await?;
 
     client
-        .put(&format!("/nodes/{}/network", client.node), &[] as &[(&str, &str)])
+        .put(
+            &format!("/nodes/{}/network", client.node),
+            &[] as &[(&str, &str)],
+        )
         .await?;
 
     Ok(())

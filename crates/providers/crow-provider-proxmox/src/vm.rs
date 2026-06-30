@@ -28,7 +28,10 @@ pub async fn create_vm(
     })?;
 
     let vmid: u32 = client.get("/cluster/nextid").await?;
-    info!("creating VM '{}' as VMID {vmid} from template {template_vmid}", spec.name);
+    info!(
+        "creating VM '{}' as VMID {vmid} from template {template_vmid}",
+        spec.name
+    );
 
     // Full clone — independent disks on the target storage.
     let upid: String = client
@@ -94,10 +97,7 @@ pub async fn create_vm(
 
     // POST /config returns null (sync) or a UPID (async) depending on Proxmox version.
     let config_upid: Option<String> = client
-        .post_opt(
-            &format!("/nodes/{}/qemu/{vmid}/config", client.node),
-            &cfg,
-        )
+        .post_opt(&format!("/nodes/{}/qemu/{vmid}/config", client.node), &cfg)
         .await?;
     if let Some(upid) = config_upid {
         client.wait_task(&upid, 60).await?;

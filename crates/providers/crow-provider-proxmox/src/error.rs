@@ -19,8 +19,14 @@ impl From<ProxmoxError> for ProviderError {
     fn from(e: ProxmoxError) -> Self {
         match e {
             ProxmoxError::Http(e) => ProviderError::Network(e.to_string()),
-            ProxmoxError::Api { status: 401 | 403, message } => ProviderError::Auth(message),
-            ProxmoxError::Api { status: 404, message } => ProviderError::NotFound(message),
+            ProxmoxError::Api {
+                status: 401 | 403,
+                message,
+            } => ProviderError::Auth(message),
+            ProxmoxError::Api {
+                status: 404,
+                message,
+            } => ProviderError::NotFound(message),
             ProxmoxError::Api { status: _, message } => ProviderError::Api(message),
             e => ProviderError::Other(e.to_string()),
         }
