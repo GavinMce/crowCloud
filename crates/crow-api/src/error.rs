@@ -6,6 +6,7 @@ use axum::{
 use serde_json::json;
 use thiserror::Error;
 
+#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error("not found")]
@@ -42,4 +43,5 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[allow(dead_code)]
 pub type ApiResult<T> = Result<T, ApiError>;

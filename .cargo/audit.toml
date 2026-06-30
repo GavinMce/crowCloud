@@ -1,0 +1,10 @@
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: rsa crate Marvin Attack timing sidechannel.
+    # No patch is available and none is expected soon (tracked upstream at
+    # https://github.com/RustCrypto/RSA/issues/626). The rsa crate is a
+    # transitive dependency via sqlx/kube TLS stacks; we do not perform
+    # RSA private-key operations directly, so exposure is limited to TLS
+    # handshakes on non-adversarial networks.
+    "RUSTSEC-2023-0071",
+]
