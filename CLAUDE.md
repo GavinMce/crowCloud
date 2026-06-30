@@ -99,12 +99,12 @@ Conventional Commits are required — release-plz reads them to generate changel
 
 | Check name | Workflow |
 |---|---|
-| `Rust CI / Format` | `ci_rust.yml` |
-| `Rust CI / Clippy` | `ci_rust.yml` |
-| `Rust CI / Test` | `ci_rust.yml` |
-| `Frontend CI / Check` | `ci_frontend.yml` |
+| `Format` | `ci_rust.yml` |
+| `Clippy` | `ci_rust.yml` |
+| `Test` | `ci_rust.yml` |
+| `Check` | `ci_frontend.yml` |
 
-The workflow `name:` fields must not change — branch protection is keyed to "Workflow name / Job name".
+Branch protection uses bare job names, not "Workflow name / Job name" — so the workflow `name:` fields can be changed freely without breaking protection rules.
 
 ### Release flow
 
