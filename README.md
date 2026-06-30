@@ -10,9 +10,9 @@
 
 **Open-source, self-hosted cloud infrastructure — on your terms.**
 
-[![Rust CI](https://github.com/GavinMce/crowCloud/actions/workflows/ci_rust.yml/badge.svg)](https://github.com/GavinMce/crowCloud/actions/workflows/ci_rust.yml)
-[![Frontend CI](https://github.com/GavinMce/crowCloud/actions/workflows/ci_frontend.yml/badge.svg)](https://github.com/GavinMce/crowCloud/actions/workflows/ci_frontend.yml)
-[![Security Audit](https://github.com/GavinMce/crowCloud/actions/workflows/ci_security.yml/badge.svg)](https://github.com/GavinMce/crowCloud/actions/workflows/ci_security.yml)
+[![CI / Rust](https://github.com/GavinMce/crowCloud/actions/workflows/ci_rust.yml/badge.svg)](https://github.com/GavinMce/crowCloud/actions/workflows/ci_rust.yml)
+[![CI / Frontend](https://github.com/GavinMce/crowCloud/actions/workflows/ci_frontend.yml/badge.svg)](https://github.com/GavinMce/crowCloud/actions/workflows/ci_frontend.yml)
+[![CI / Security](https://github.com/GavinMce/crowCloud/actions/workflows/ci_security.yml/badge.svg)](https://github.com/GavinMce/crowCloud/actions/workflows/ci_security.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 </div>
@@ -181,13 +181,13 @@ Configuration (passed to `ProxmoxProvider::new`):
 
 ## CI / CD
 
-| Workflow | Trigger | Jobs |
-|---|---|---|
-| `ci_rust.yml` | push/PR → main | Format · Clippy · Test |
-| `ci_frontend.yml` | push/PR → main | Type-check · Lint · Test · Build |
-| `ci_security.yml` | Weekly + `Cargo.lock`/`package-lock.json` changes | Cargo Audit · npm Audit |
-| `cd_release.yml` | push → main | release-plz PR management + tag creation |
-| `cd_publish.yml` | push tag `v*.*.*` | Docker images → GHCR · CLI binaries · Helm chart · GitHub Release |
+| Workflow | File | Trigger | Jobs |
+|---|---|---|---|
+| CI / Rust | `ci_rust.yml` | push/PR → main | Format · Clippy · Test |
+| CI / Frontend | `ci_frontend.yml` | push/PR → main | Type-check · Lint · Test · Build |
+| CI / Security | `ci_security.yml` | Weekly + lock-file changes | Cargo Audit · npm Audit |
+| CD / Release | `cd_release.yml` | push → main | release-plz PR + tag creation |
+| CD / Publish | `cd_publish.yml` | push tag `v*.*.*` | Docker → GHCR · CLI binaries · Helm · GitHub Release |
 
 Branch protection on `main` requires all four CI checks to pass before merge.
 
