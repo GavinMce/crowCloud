@@ -116,8 +116,10 @@ jobs:
       - name: Package and push
         run: |
           VERSION=${GITHUB_REF_NAME#v}
+          # GHCR OCI requires a lowercase namespace
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           helm package charts/crowcloud --version "$VERSION" --app-version "$VERSION"
-          helm push "crowcloud-${VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
+          helm push "crowcloud-${VERSION}.tgz" "oci://ghcr.io/${OWNER}/charts"
 
   release:
     name: GitHub Release
