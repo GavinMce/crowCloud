@@ -1,0 +1,59 @@
+name: Provider Request
+description: Request support for a new infrastructure provider
+labels: ["enhancement", "provider"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to request a new cloud or bare-metal provider. Implementing `InfraProvider` is the minimum bar — see CONTRIBUTING.md for the provider skeleton.
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider name
+      description: The provider you want supported.
+      placeholder: "e.g. AWS EC2, DigitalOcean, Vultr, libvirt, …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: api
+    attributes:
+      label: Provider API / SDK
+      description: Link to the provider's API docs and/or SDK.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: ops
+    attributes:
+      label: Required operations
+      description: Which `InfraProvider` methods does this provider support?
+      options:
+        - label: "`create_vm` / `delete_vm` / `vm_status` / `start_vm` / `stop_vm`"
+        - label: "`create_volume` / `delete_volume`"
+        - label: "`create_network` / `delete_network`"
+
+  - type: textarea
+    id: auth
+    attributes:
+      label: Authentication
+      description: How does the provider authenticate? API key, OAuth, IAM role, …?
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Known constraints or differences
+      description: Anything unusual about this provider that would affect the implementation. E.g. async task polling required, no network API, pricing model quirks.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Contribution
+      options:
+        - label: "I am willing to implement this provider and open a PR"
+        - label: "I can test this provider but not implement it"
