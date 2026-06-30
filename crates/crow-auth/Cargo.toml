@@ -15,5 +15,5 @@ anyhow.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 argon2 = "0.5"
