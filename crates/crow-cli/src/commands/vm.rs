@@ -1,8 +1,17 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use serde::{Deserialize, Serialize};
+
+use crate::client::{require_project, require_rg, CrowClient};
 
 #[derive(Args)]
 pub struct VmCmd {
+    /// Project (defaults to context)
+    #[arg(long, global = true)]
+    pub project: Option<String>,
+    /// Resource group (defaults to context)
+    #[arg(long, global = true)]
+    pub rg: Option<String>,
     #[command(subcommand)]
     pub command: VmSubcommand,
 }
@@ -11,58 +20,104 @@ pub struct VmCmd {
 pub enum VmSubcommand {
     /// Create a new VM
     Create(CreateArgs),
-    /// List VMs
+    /// List VMs in the current resource group
     List,
     /// Show VM details
     Get { name: String },
     /// Delete a VM
     Delete { name: String },
-    /// Start a stopped VM
-    Start { name: String },
-    /// Stop a running VM
-    Stop { name: String },
-    /// Open an SSH session to a VM
-    Ssh { name: String },
-    /// Expose a VM port externally
-    Expose(ExposeArgs),
-    /// Remove external exposure
-    Unexpose {
-        name: String,
-        #[arg(long)]
-        domain: Option<String>,
-    },
 }
 
 #[derive(Args)]
 pub struct CreateArgs {
     pub name: String,
+    /// Provider name or UUID
+    #[arg(long)]
+    pub provider: String,
     #[arg(long, default_value = "2")]
     pub cpu: u32,
-    #[arg(long, default_value = "4", help = "Memory in GiB")]
-    pub mem: u32,
-    #[arg(long, default_value = "50", help = "Disk in GiB")]
-    pub disk: u64,
+    /// Memory in MiB
+    #[arg(long, default_value = "2048")]
+    pub memory_mib: u64,
+    /// Disk in GiB
+    #[arg(long, default_value = "20")]
+    pub disk_gib: u64,
     #[arg(long)]
     pub image: String,
-    #[arg(long, help = "Block until provisioned")]
-    pub wait: bool,
+    #[arg(long)]
+    pub hostname: Option<String>,
 }
 
-#[derive(Args)]
-pub struct ExposeArgs {
-    pub name: String,
-    #[arg(long)]
-    pub port: u16,
-    #[arg(long, help = "HTTP domain (required for http expose)")]
-    pub domain: Option<String>,
-    #[arg(long, default_value = "http", help = "http | tcp | udp")]
-    pub protocol: String,
-    #[arg(long, help = "Public port for TCP/UDP expose")]
-    pub public_port: Option<u16>,
-    #[arg(long)]
-    pub tls: bool,
+#[derive(Serialize)]
+struct CreateVmBody {
+    resource_type: &'static str,
+    name: String,
+    provider_id: String,
+    cpu: u32,
+    memory_mib: u64,
+    disk_gib: u64,
+    image: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hostname: Option<String>,
 }
 
-pub async fn run(_cmd: VmCmd) -> Result<()> {
-    todo!("vm commands")
+#[derive(Deserialize)]
+struct VmRow {
+    id: String,
+    name: String,
+    resource_type: String,
+    phase: String,
+    created_at: String,
+}
+
+pub async fn run(cmd: VmCmd) -> Result<()> {
+    let project = require_project(cmd.project)?;
+    let rg = require_rg(cmd.rg)?;
+    let client = CrowClient::from_config(None)?;
+    let base = format!("/api/v1/projects/{project}/resource-groups/{rg}/resources");
+
+    match cmd.command {
+        VmSubcommand::List => {
+            let vms: Vec<VmRow> = client.get(&base).await?;
+            let vms: Vec<&VmRow> = vms.iter().filter(|r| r.resource_type == "vm").collect();
+            if vms.is_empty() {
+                println!("No VMs in {project}/{rg}.");
+            } else {
+                println!("{:<36}  {:<24}  {:<14}  CREATED", "ID", "NAME", "PHASE");
+                for v in vms {
+                    println!(
+                        "{:<36}  {:<24}  {:<14}  {}",
+                        v.id, v.name, v.phase, v.created_at
+                    );
+                }
+            }
+        }
+        VmSubcommand::Get { name } => {
+            let v: VmRow = client.get(&format!("{base}/{name}")).await?;
+            println!("id:      {}", v.id);
+            println!("name:    {}", v.name);
+            println!("phase:   {}", v.phase);
+            println!("created: {}", v.created_at);
+        }
+        VmSubcommand::Create(args) => {
+            let provider_id = client.resolve_provider_id(&args.provider).await?;
+            let body = CreateVmBody {
+                resource_type: "vm",
+                name: args.name.clone(),
+                provider_id,
+                cpu: args.cpu,
+                memory_mib: args.memory_mib,
+                disk_gib: args.disk_gib,
+                image: args.image,
+                hostname: args.hostname,
+            };
+            let v: VmRow = client.post(&base, &body).await?;
+            println!("Created VM '{}' ({}) — phase: {}", v.name, v.id, v.phase);
+        }
+        VmSubcommand::Delete { name } => {
+            client.delete(&format!("{base}/{name}")).await?;
+            println!("Deleted VM '{name}'");
+        }
+    }
+    Ok(())
 }
