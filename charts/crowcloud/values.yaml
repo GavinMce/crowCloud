@@ -1,16 +1,42 @@
 api:
-  image: ghcr.io/gavinmce/crowcloud-api:latest
+  # Matches the image published by .github/workflows/cd_publish.yml
+  # (ghcr.io/<owner>/crow-api), not "crowcloud-api".
+  image: ghcr.io/gavinmce/crow-api
+  tag: latest
+  imagePullPolicy: IfNotPresent
   replicas: 1
   port: 8080
+  logLevel: info
   env:
-    DATABASE_URL: ""  # set via secret
-    JWT_SECRET: ""    # set via secret
+    # Required. e.g. --set api.env.JWT_SECRET=$(openssl rand -hex 32)
+    # Templated into a Secret (templates/secret.yaml), never left as a
+    # plaintext env value in the Deployment spec.
+    JWT_SECRET: ""
+
+    # Only consulted when postgres.enabled is false. When postgres.enabled
+    # is true, DATABASE_URL is wired automatically from the CloudNativePG
+    # Cluster's generated "app" secret instead.
+    DATABASE_URL: ""
+
+    # Alternative to DATABASE_URL above: reference an existing Secret you
+    # manage yourself instead of letting this chart create one.
+    databaseUrlSecretName: ""
+    databaseUrlSecretKey: "database-url"
 
 operator:
-  image: ghcr.io/gavinmce/crowcloud-operator:latest
+  image: ghcr.io/gavinmce/crow-operator
+  tag: latest
+  imagePullPolicy: IfNotPresent
+  logLevel: info
+  # Keep at 1 — crow-operator has no leader election and self-installs the
+  # VirtualMachine CRD + crow-resources namespace at startup; more than one
+  # replica would race on those.
   replicas: 1
 
 postgres:
+  # When true, this chart creates a CloudNativePG Cluster resource and wires
+  # DATABASE_URL to it automatically. Requires the CloudNativePG operator to
+  # already be installed in the cluster (see deploy/bootstrap.sh).
   enabled: true
   storageSize: 10Gi
   storageClass: ""
@@ -18,4 +44,6 @@ postgres:
 ingress:
   enabled: false
   host: ""
+  ingressClassName: ""
   tls: false
+  tlsSecretName: ""

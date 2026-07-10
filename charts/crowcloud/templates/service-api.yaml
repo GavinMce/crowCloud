@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crowcloud.fullname" . }}-api
+  labels:
+    {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "api") .) | nindent 4 }}
+spec:
+  selector:
+    {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "api") .) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.api.port }}
+      targetPort: http

@@ -1,0 +1,24 @@
+crowCloud has been deployed.
+
+{{- if .Values.postgres.enabled }}
+Postgres: CloudNativePG Cluster "{{ include "crowcloud.fullname" . }}-postgres" is
+provisioning in namespace {{ .Release.Namespace }}. Check status with:
+  kubectl get cluster {{ include "crowcloud.fullname" . }}-postgres -n {{ .Release.Namespace }}
+{{- end }}
+
+Check that both deployments are ready:
+  kubectl get deploy -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+{{- if .Values.ingress.enabled }}
+
+The API is reachable at:
+  http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+
+No Ingress is configured (ingress.enabled=false). Reach the API with:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "crowcloud.fullname" . }}-api {{ .Values.api.port }}:{{ .Values.api.port }}
+{{- end }}
+
+Once reachable, install the CLI and log in:
+  cargo install --path crates/crow-cli
+  crow login --server http://<api-address>:{{ .Values.api.port }}
