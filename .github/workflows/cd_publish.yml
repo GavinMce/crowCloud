@@ -97,7 +97,7 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar czf ${{ github.workspace }}/crow-${{ matrix.target }}.tar.gz crow
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: crow-${{ matrix.target }}
           path: crow-${{ matrix.target }}.tar.gz
