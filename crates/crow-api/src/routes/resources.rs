@@ -1,5 +1,3 @@
-use std::net::IpAddr;
-
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -7,7 +5,12 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use crow_core::types::{CloudInitConfig, VmHandle, VmSpec};
+use crow_core::crd::{
+    resource_group::ResourceRef,
+    resources::{VirtualMachine, VirtualMachineSpec},
+};
+use crow_provider_registry::{vm_cr_name, VM_NAMESPACE};
+use kube::api::{Api, DeleteParams, ObjectMeta, PostParams};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::types::Uuid;
@@ -15,14 +18,13 @@ use sqlx::types::Uuid;
 use crate::{
     error::{ApiError, ApiResult},
     middleware::AuthUser,
-    providers::build_infra_provider,
     AppState,
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
-        .route("/:name", get(get_one).delete(remove))
+        .route("/{name}", get(get_one).delete(remove))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -70,9 +72,6 @@ struct CreateVmRequest {
     #[serde(default = "default_disk_gib")]
     disk_gib: u64,
     image: String,
-    ip: Option<IpAddr>,
-    hostname: Option<String>,
-    user_data: Option<String>,
 }
 
 fn default_memory_mib() -> u64 {
@@ -105,6 +104,9 @@ async fn create(
     }
 }
 
+/// `VirtualMachineSpec.memory_gib` has no sub-GiB precision, so a request whose
+/// `memory_mib` isn't a whole number of GiB can't be represented faithfully —
+/// reject it rather than silently rounding down.
 async fn create_vm(
     state: AppState,
     project: String,
@@ -112,35 +114,26 @@ async fn create_vm(
     user_id: Option<Uuid>,
     req: CreateVmRequest,
 ) -> ApiResult<(StatusCode, Json<ResourceResponse>)> {
-    let (provider_type, provider_config): (String, Value) =
-        sqlx::query_as("SELECT provider_type, config FROM providers WHERE id = $1")
-            .bind(req.provider_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| ApiError::Internal(e.into()))?
-            .ok_or(ApiError::NotFound)?;
+    if !req.memory_mib.is_multiple_of(1024) {
+        return Err(ApiError::BadRequest(
+            "memory_mib must be a whole number of GiB (a multiple of 1024)".to_string(),
+        ));
+    }
 
-    let provider = build_infra_provider(&provider_type, &provider_config)?;
+    let provider_name: String = sqlx::query_scalar("SELECT name FROM providers WHERE id = $1")
+        .bind(req.provider_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?
+        .ok_or(ApiError::NotFound)?;
 
-    let cloud_init = req.hostname.as_ref().map(|h| CloudInitConfig {
-        hostname: h.clone(),
-        user_data: req.user_data.clone(),
-        network_config: None,
+    let spec_json = serde_json::json!({
+        "name": req.name,
+        "cpu": req.cpu,
+        "memory_mib": req.memory_mib,
+        "disk_gib": req.disk_gib,
+        "image": req.image,
     });
-
-    let spec = VmSpec {
-        name: req.name.clone(),
-        cpu: req.cpu,
-        memory_mib: req.memory_mib,
-        disk_gib: req.disk_gib,
-        image: req.image.clone(),
-        ip: req.ip,
-        cloud_init,
-        network_ref: None,
-    };
-
-    let spec_json =
-        serde_json::to_value(&spec).map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
 
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO resources
@@ -165,23 +158,29 @@ async fn create_vm(
         _ => ApiError::Internal(e.into()),
     })?;
 
-    let (phase, handle_json) = match provider.create_vm(spec).await {
-        Ok(handle) => {
-            let j = serde_json::to_value(&handle)
-                .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?;
-            ("Running".to_string(), Some(j))
-        }
-        Err(e) => {
-            tracing::error!(resource_id = %id, "create_vm failed: {e}");
-            (format!("Failed: {e}"), None)
-        }
+    let vm_cr = VirtualMachine {
+        metadata: ObjectMeta {
+            name: Some(vm_cr_name(id)),
+            namespace: Some(VM_NAMESPACE.to_string()),
+            ..Default::default()
+        },
+        spec: VirtualMachineSpec {
+            infra_provider_ref: ResourceRef {
+                name: provider_name,
+                namespace: None,
+            },
+            ip_pool_ref: None,
+            cpu: req.cpu,
+            memory_gib: (req.memory_mib / 1024) as u32,
+            disk_gib: req.disk_gib as u32,
+            image: req.image.clone(),
+        },
+        status: None,
     };
 
-    sqlx::query("UPDATE resources SET phase = $1, handle = $2, updated_at = NOW() WHERE id = $3")
-        .bind(&phase)
-        .bind(&handle_json)
-        .bind(id)
-        .execute(&state.db)
+    let vm_api: Api<VirtualMachine> = Api::namespaced(state.kube.clone(), VM_NAMESPACE);
+    vm_api
+        .create(&PostParams::default(), &vm_cr)
         .await
         .map_err(|e| ApiError::Internal(e.into()))?;
 
@@ -193,13 +192,13 @@ async fn create_vm(
             .map_err(|e| ApiError::Internal(e.into()))?;
 
     Ok((
-        StatusCode::CREATED,
+        StatusCode::ACCEPTED,
         Json(ResourceResponse {
             id,
             name: req.name,
             resource_type: "vm".into(),
-            phase,
-            handle: handle_json,
+            phase: "Pending".into(),
+            handle: None,
             created_at,
         }),
     ))
@@ -242,20 +241,13 @@ async fn get_one(
     }))
 }
 
-#[derive(sqlx::FromRow)]
-struct ResourceProviderRow {
-    provider_id: Option<Uuid>,
-    handle: Option<Value>,
-}
-
 async fn remove(
     AuthUser(_): AuthUser,
     State(state): State<AppState>,
     Path((project, rg, name)): Path<(String, String, String)>,
 ) -> ApiResult<StatusCode> {
-    let row = sqlx::query_as::<_, ResourceProviderRow>(
-        "SELECT provider_id, handle FROM resources
-         WHERE project = $1 AND resource_group = $2 AND name = $3",
+    let id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM resources WHERE project = $1 AND resource_group = $2 AND name = $3",
     )
     .bind(&project)
     .bind(&rg)
@@ -265,33 +257,24 @@ async fn remove(
     .map_err(|e| ApiError::Internal(e.into()))?
     .ok_or(ApiError::NotFound)?;
 
-    // Best-effort provider cleanup.
-    if let (Some(pid), Some(handle_val)) = (row.provider_id, row.handle) {
-        let provider_row: Option<(String, Value)> =
-            sqlx::query_as("SELECT provider_type, config FROM providers WHERE id = $1")
-                .bind(pid)
-                .fetch_optional(&state.db)
+    // Delete the CR; the operator's finalizer performs the provider cleanup and
+    // the `DELETE FROM resources` (see crow-operator's virtual_machine::cleanup).
+    let vm_api: Api<VirtualMachine> = Api::namespaced(state.kube.clone(), VM_NAMESPACE);
+    match vm_api
+        .delete(&vm_cr_name(id), &DeleteParams::default())
+        .await
+    {
+        Ok(_) => {}
+        Err(kube::Error::Api(e)) if e.code == 404 => {
+            // CR already gone (e.g. deleted out-of-band) — clean up the orphaned row.
+            sqlx::query("DELETE FROM resources WHERE id = $1")
+                .bind(id)
+                .execute(&state.db)
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
-
-        if let Some((ptype, cfg)) = provider_row {
-            if let Ok(provider) = build_infra_provider(&ptype, &cfg) {
-                if let Ok(handle) = serde_json::from_value::<VmHandle>(handle_val) {
-                    if let Err(e) = provider.delete_vm(&handle).await {
-                        tracing::warn!("delete_vm failed during resource removal: {e}");
-                    }
-                }
-            }
         }
+        Err(e) => return Err(ApiError::Internal(e.into())),
     }
-
-    sqlx::query("DELETE FROM resources WHERE project = $1 AND resource_group = $2 AND name = $3")
-        .bind(&project)
-        .bind(&rg)
-        .bind(&name)
-        .execute(&state.db)
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
 
     Ok(StatusCode::NO_CONTENT)
 }

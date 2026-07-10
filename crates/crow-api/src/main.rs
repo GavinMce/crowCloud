@@ -4,7 +4,6 @@ use tracing_subscriber::EnvFilter;
 
 mod error;
 mod middleware;
-mod providers;
 mod routes;
 mod state;
 

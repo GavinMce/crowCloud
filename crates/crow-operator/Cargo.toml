@@ -10,12 +10,19 @@ path = "src/main.rs"
 
 [dependencies]
 crow-core = { path = "../crow-core" }
+crow-db = { path = "../crow-db" }
+crow-provider-registry = { path = "../providers/crow-provider-registry" }
+crow-resource-vm = { path = "../resources/crow-resource-vm" }
 
 tokio.workspace = true
 kube.workspace = true
 k8s-openapi.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+futures.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

@@ -9,6 +9,7 @@ members = [
     "crates/crow-cli",
     "crates/providers/crow-provider-proxmox",
     "crates/providers/crow-provider-hetzner",
+    "crates/providers/crow-provider-registry",
     "crates/resources/crow-resource-vm",
     "crates/resources/crow-resource-k8s",
     "crates/resources/crow-resource-objectstore",
@@ -26,6 +27,7 @@ license = "MIT"
 # async
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
+futures = "0.3"
 
 # web
 axum = { version = "0.8", features = ["macros"] }

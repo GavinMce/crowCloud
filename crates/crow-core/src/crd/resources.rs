@@ -29,6 +29,9 @@ pub struct Condition {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct VirtualMachineSpec {
+    /// `name` holds the Postgres `providers.name` value, not a Kubernetes object
+    /// reference — there is no `Provider` custom resource today, so `namespace`
+    /// is unused. The operator resolves this by querying Postgres directly.
     pub infra_provider_ref: ResourceRef,
     pub ip_pool_ref: Option<ResourceRef>,
     pub cpu: u32,
