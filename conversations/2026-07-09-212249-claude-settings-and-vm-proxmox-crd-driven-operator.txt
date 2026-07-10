@@ -1,0 +1,187 @@
+Session summary — 2026-07-09
+Branch: feat/api-bootstrap
+
+## 1. Claude Code project setup
+
+Set up `.claude/` config for the repo (nothing existed before except a personal
+`settings.local.json` with one permission):
+
+- `.claude/settings.json` (committed, team-wide): permission allowlist for
+  routine `cargo check/clippy/fmt/test/build/doc/tree/audit`, the frontend's
+  `npm run` scripts, read-only `git`, and `gh pr`/`gh run`/`gh workflow`.
+- `.claude/agents/rust-reviewer.md`: reviews Rust diffs against this repo's
+  conventions — clippy/fmt cleanliness, workspace-dependency usage, kube/
+  k8s-openapi version lockstep, InfraProvider error mapping, axum 0.8 patterns,
+  Proxmox task-polling correctness.
+- `.claude/agents/provider-implementer.md`: implements new/extended
+  InfraProvider backends (e.g. filling out the Hetzner stub) by mirroring the
+  reference crow-provider-proxmox implementation.
+
+Committed as 65c01c6 (local; not yet pushed at end of session).
+
+## 2. Project status review
+
+Audited where the project actually stood:
+
+- `feat/api-bootstrap`'s real work (PR #12: auth, providers, projects,
+  resource groups/resources CRUD, CLI wiring) had already merged to `main` on
+  2026-06-30 — the branch had gone stale.
+- CI green on `main` except a weekly `CI / Security` job failing on a
+  `checks: write` vs `issues: write` permission gap (rustsec/audit-check
+  tries to auto-file an issue for an "unmaintained crate" warning, not an
+  actual vulnerability) — flagged but not fixed this session.
+- 9 open PRs, all Dependabot dependency bumps.
+- Key finding: the operator/CRD/ResourceDriver layer existed only as stub
+  types — `crow-operator`'s six controllers were byte-identical
+  `std::future::pending().await` stubs, `crow-resource-vm`'s ResourceDriver
+  was all `todo!()`, and the live VM create/delete path in crow-api called
+  `ProxmoxProvider` synchronously inline in the HTTP handler with zero
+  Kubernetes involvement (`AppState.kube` was a dead field).
+
+## 3. VM + Proxmox: CRD-driven reconcile vertical slice
+
+Decided with the user (via AskUserQuestion) to wire VirtualMachine + Proxmox
+as the first fully-connected vertical: CRD → operator reconcile loop →
+ResourceDriver → InfraProvider, replacing the synchronous path, with the
+operator resolving provider config by reading Postgres directly rather than
+via the unused `crd::providers::Provider` CRD.
+
+Planned in plan mode (saved to
+~/.claude/plans/witty-dancing-hopper.md) after verifying the actual installed
+kube 4.0.0 / k8s-openapi 0.28.0 API shapes against the cached crates.io source
+(notably: `kube_runtime::finalizer::finalizer()` requires
+`ReconcileFut::Error: StdError + 'static`, so `anyhow::Error` doesn't work as
+the operator's reconcile error type — a dedicated `thiserror` enum is
+required).
+
+### Changes made
+
+- **New crate `crow-provider-registry`**
+  (crates/providers/crow-provider-registry): `build_infra_provider` +
+  `ProxmoxConfig` moved out of `crow-api/src/providers.rs` (deleted), plus new
+  async `resolve_provider_by_id`/`resolve_provider_by_name` (Postgres-backed),
+  and the `VM_NAMESPACE`/`vm_cr_name(uuid)` naming convention (CR name is
+  deterministically `vm-{resources.id}` — no new DB migration needed to link
+  a Postgres row to its Kubernetes object).
+- **`crow-resource-vm::VirtualMachineDriver`** — all 5 `ResourceDriver`
+  methods implemented (provision/deprovision/reconcile/endpoints/credentials/
+  config_schema), including the `VmStatus` → `ResourcePhase` mapping. 4 unit
+  tests against a mock `InfraProvider`.
+- **`crow-operator`** — `main.rs` now self-installs the `VirtualMachine` CRD
+  via `CustomResourceExt::crd()` + server-side apply, ensures a fixed
+  `crow-resources` namespace, and connects to Postgres. The
+  `virtual_machine` controller is a real `kube::runtime::Controller` with a
+  `vm.crow.cloud/finalizer` finalizer, provision-vs-reconcile branching,
+  `.status` patching, and mirroring phase/handle back into the `resources`
+  table so existing GET/list API reads keep working unchanged. 120s
+  steady-state requeue, 30s error requeue. 3 unit tests for CR-name parsing.
+- **`crow-api`** — `AppState.kube` changed from `Option<Client>` to a
+  required `Client` (hard-fails at startup if unreachable, since VM creation
+  now depends on it). `POST resources` (VM) now creates a `VirtualMachine`
+  CR instead of calling Proxmox inline and returns `202 Accepted`
+  (was `201 Created` synchronous); `DELETE` deletes the CR and lets the
+  operator's finalizer do the actual cleanup, with a 404 fallback that
+  deletes an orphaned Postgres row directly.
+- Added a doc-comment on `VirtualMachineSpec.infra_provider_ref` in
+  `crd/resources.rs` recording that `.name` refers to the Postgres
+  `providers.name` column, not a Kubernetes object reference (no `Provider`
+  CR exists).
+
+### Known v1 simplifications (intentional, called out during planning)
+
+- Single fixed namespace (`crow-resources`) for all resource CRs — no
+  per-project namespace mapping.
+- No static IP / cloud-init wiring from the API request anymore — the CRD
+  spec has no such fields yet, so the CLI's `hostname`/`user_data`/`ip` VM
+  flags are now silently ignored by the API (JSON extra fields, not a
+  deserialize error).
+- Only `VirtualMachine`'s CRD is self-installed by the operator —
+  K8sCluster/Database/ObjectStore remain out of scope.
+
+### Verification performed
+
+- `cargo build --workspace`, `cargo clippy --workspace --all-targets
+  --all-features` (zero warnings), `cargo fmt --all -- --check`, and
+  `cargo test --all` all pass. 10 new unit tests total across
+  crow-provider-registry, crow-resource-vm, and crow-operator.
+- Not done: a live end-to-end run against a real/kind cluster + Postgres +
+  mocked Proxmox HTTP endpoints (the plan file has the exact manual steps for
+  this, under its Verification section, if picked up later).
+
+## 4. Live end-to-end verification against a real Proxmox host
+
+Follow-up session: the user provided a real local Proxmox host
+(192.168.100.101, node `pve`) and asked for the full CRD-driven path to be
+proven end-to-end, not just unit-tested.
+
+### Environment built for the test
+
+- Installed `kubectl` v1.36.2 and `kind` v0.29.0 (neither was present).
+- `kind create cluster --name crowcloud-test` — real local Kubernetes control
+  plane.
+- Postgres 16 via `docker run postgres:16-alpine` on port 55432.
+- Built and ran `crow-operator` and `crow-api` from source
+  (`cargo build`, then `nohup ./target/debug/...` with `DATABASE_URL` pointed
+  at the Postgres container and the kube client picking up kind's kubeconfig).
+- Proxmox side: user created an API token (`root@pam!crowCloud`) and a
+  cloud-init template (VMID 9000, Debian 12) per instructions given in-chat;
+  had to grant the token an ACL role (`pveum acl modify / --tokens ... --roles
+  Administrator`) after an initial `VM.Audit` permission error — token
+  creation with Privilege Separation left it with no rights.
+
+### Real bugs found and fixed (all pre-existing, not introduced in this
+### session's earlier work — nothing had ever exercised these code paths
+### against real infra before)
+
+1. **axum 0.8 route syntax** — `crow-api` panicked at startup
+   (`Path segments must not start with ':'`). Five files still used the
+   pre-0.8 `:param` syntax instead of `{param}`: `routes/mod.rs`,
+   `routes/projects.rs`, `routes/providers.rs`, `routes/resource_groups.rs`,
+   `routes/resources.rs`. Fixed.
+2. **`jsonwebtoken` v10 had no crypto backend enabled** — signing the first
+   JWT panicked (`Could not automatically determine the process-level
+   CryptoProvider`). The dependency in `crow-auth/Cargo.toml` was a bare
+   `jsonwebtoken = "10"`, which resolves to `default = ["use_pem"]` only —
+   no HMAC implementation at all. Fixed by adding the `rust_crypto` feature.
+3. **Proxmox `/cluster/nextid` deserialized as the wrong type** — Proxmox
+   returns `{"data":"100"}` (a JSON string) for the next VMID, but
+   `crow-provider-proxmox/src/vm.rs` deserialized straight into `u32`, so
+   every real `create_vm` call failed immediately with a serde type error.
+   Fixed by decoding as `String` then parsing.
+4. Also hardened the operator's `for_each` error logging — it was only
+   printing the outermost wrapper ("reconciler ... failed") via `%e` Display,
+   which swallowed the actual cause. Now walks `.source()` and logs the full
+   chain; this is what surfaced bug #3's real message in the first place.
+
+### Result
+
+Full real create → reconcile → delete cycle against the physical Proxmox
+host, verified independently at every layer:
+- `POST` resource → `202 Accepted`, `phase: Pending`.
+- Operator cloned template 9000 to a new VM (VMID 100), resized the disk to
+  the requested 5 GiB, and started it — confirmed via direct Proxmox API
+  calls that a real VM was `"status":"running"`.
+- `VirtualMachine` CR reached `status.phase: Ready`; Postgres `resources` row
+  mirrored the same phase and the real `provider_id: "100"` handle; the
+  API's `GET` matched both.
+- `DELETE` → CR's finalizer ran, deprovisioned the real Proxmox VM, removed
+  the finalizer (CR disappeared), and deleted the Postgres row. Confirmed via
+  Proxmox API that VMID 100's config file no longer exists (fully deleted,
+  not just stopped).
+- Full workspace re-verification after the fixes: `cargo build --workspace`,
+  `clippy --workspace --all-targets --all-features` (zero warnings), `fmt
+  --check`, `test --all` all pass.
+
+Test environment fully torn down afterward (kind cluster deleted, Postgres
+container removed, both binaries killed); the Proxmox host was left with
+only the `9000` template, matching its pre-test state.
+
+## Next steps suggested
+
+- Consider fixing the `ci_security.yml` `issues: write` permission gap
+  (unrelated pre-existing CI issue, noted earlier, still unaddressed).
+- Once VM+Proxmox is proven live (done, see §4), copy the same pattern to
+  K8sCluster/Database/ObjectStore and to the Hetzner provider.
+- Consider adding an integration test that actually builds the axum Router
+  and signs a JWT, so bugs #1 and #2 above would be caught by CI rather than
+  requiring a live run to discover.
