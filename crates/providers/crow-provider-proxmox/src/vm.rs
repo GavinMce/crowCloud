@@ -27,7 +27,11 @@ pub async fn create_vm(
         ),
     })?;
 
-    let vmid: u32 = client.get("/cluster/nextid").await?;
+    // Proxmox returns the next VMID as a JSON string (e.g. `{"data":"100"}`), not a number.
+    let vmid_str: String = client.get("/cluster/nextid").await?;
+    let vmid: u32 = vmid_str.parse().map_err(|_| {
+        ProxmoxError::Parse(format!("invalid VMID from /cluster/nextid: {vmid_str}"))
+    })?;
     info!(
         "creating VM '{}' as VMID {vmid} from template {template_vmid}",
         spec.name

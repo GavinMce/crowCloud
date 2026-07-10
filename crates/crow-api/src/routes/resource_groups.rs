@@ -17,7 +17,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
-        .route("/:rg", delete(remove))
+        .route("/{rg}", delete(remove))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
