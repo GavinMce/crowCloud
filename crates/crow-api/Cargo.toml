@@ -12,7 +12,7 @@ path = "src/main.rs"
 crow-core = { path = "../crow-core" }
 crow-db = { path = "../crow-db" }
 crow-auth = { path = "../crow-auth" }
-crow-provider-proxmox = { path = "../providers/crow-provider-proxmox" }
+crow-provider-registry = { path = "../providers/crow-provider-registry" }
 
 async-trait.workspace = true
 tokio.workspace = true

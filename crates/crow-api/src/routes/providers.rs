@@ -9,17 +9,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::types::Uuid;
 
+use crow_provider_registry::build_infra_provider;
+
 use crate::{
     error::{ApiError, ApiResult},
     middleware::AuthUser,
-    providers::build_infra_provider,
     AppState,
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
-        .route("/:id", delete(remove))
+        .route("/{id}", delete(remove))
 }
 
 #[derive(Serialize, sqlx::FromRow)]

@@ -14,11 +14,11 @@ pub fn router() -> Router<AppState> {
         .nest("/auth", auth::router())
         .nest("/projects", projects::router())
         .nest(
-            "/projects/:project/resource-groups",
+            "/projects/{project}/resource-groups",
             resource_groups::router(),
         )
         .nest(
-            "/projects/:project/resource-groups/:rg/resources",
+            "/projects/{project}/resource-groups/{rg}/resources",
             resources::router(),
         )
         .nest("/providers", providers::router())

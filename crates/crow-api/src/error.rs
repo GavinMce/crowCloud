@@ -23,6 +23,15 @@ pub enum ApiError {
     Internal(#[from] anyhow::Error),
 }
 
+impl From<crow_provider_registry::RegistryError> for ApiError {
+    fn from(e: crow_provider_registry::RegistryError) -> Self {
+        match e {
+            crow_provider_registry::RegistryError::NotFound => ApiError::NotFound,
+            other => ApiError::BadRequest(other.to_string()),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {

@@ -1,4 +1,5 @@
 use kube::Client;
+use sqlx::PgPool;
 
 pub mod database;
 pub mod ip_claim;
@@ -7,9 +8,9 @@ pub mod object_store;
 pub mod tunnel;
 pub mod virtual_machine;
 
-pub async fn run_all(client: Client) -> anyhow::Result<()> {
+pub async fn run_all(client: Client, db: PgPool) -> anyhow::Result<()> {
     tokio::try_join!(
-        virtual_machine::run(client.clone()),
+        virtual_machine::run(client.clone(), db),
         k8s_cluster::run(client.clone()),
         object_store::run(client.clone()),
         database::run(client.clone()),
