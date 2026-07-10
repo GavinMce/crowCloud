@@ -1,0 +1,21 @@
+{{- if .Values.postgres.enabled }}
+# Requires the CloudNativePG operator to already be installed in the cluster
+# (deploy/bootstrap.sh installs it as a prerequisite before this chart).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "crowcloud.fullname" . }}-postgres
+  labels:
+    {{- include "crowcloud.labels" . | nindent 4 }}
+spec:
+  instances: 1
+  storage:
+    size: {{ .Values.postgres.storageSize }}
+    {{- if .Values.postgres.storageClass }}
+    storageClass: {{ .Values.postgres.storageClass }}
+    {{- end }}
+  bootstrap:
+    initdb:
+      database: crowcloud
+      owner: crowcloud
+{{- end }}

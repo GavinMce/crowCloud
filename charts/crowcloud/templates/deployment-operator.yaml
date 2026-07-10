@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "crowcloud.fullname" . }}-operator
+  labels:
+    {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "operator") .) | nindent 4 }}
+spec:
+  # Only 1 replica: crow-operator self-installs the VirtualMachine CRD and
+  # the crow-resources namespace at startup with no leader election, so
+  # running more than one would race on those operations.
+  replicas: {{ .Values.operator.replicas }}
+  selector:
+    matchLabels:
+      {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "operator") .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "operator") .) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "crowcloud.fullname" . }}-operator
+      containers:
+        - name: crow-operator
+          image: "{{ .Values.operator.image }}:{{ .Values.operator.tag }}"
+          imagePullPolicy: {{ .Values.operator.imagePullPolicy | default "IfNotPresent" }}
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.operator.logLevel | default "info" | quote }}
+            {{- if .Values.postgres.enabled }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crowcloud.fullname" . }}-postgres-app
+                  key: uri
+            {{- else }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.env.databaseUrlSecretName | default (printf "%s-secrets" (include "crowcloud.fullname" .)) }}
+                  key: {{ .Values.api.env.databaseUrlSecretKey | default "database-url" }}
+            {{- end }}

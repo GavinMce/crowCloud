@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "crowcloud.fullname" . }}-api
+  labels:
+    {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "api") .) | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "api") .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "api") .) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "crowcloud.fullname" . }}-api
+      containers:
+        - name: crow-api
+          image: "{{ .Values.api.image }}:{{ .Values.api.tag }}"
+          imagePullPolicy: {{ .Values.api.imagePullPolicy | default "IfNotPresent" }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+          env:
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:{{ .Values.api.port }}"
+            - name: RUST_LOG
+              value: {{ .Values.api.logLevel | default "info" | quote }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crowcloud.fullname" . }}-secrets
+                  key: jwt-secret
+            {{- if .Values.postgres.enabled }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crowcloud.fullname" . }}-postgres-app
+                  key: uri
+            {{- else }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.env.databaseUrlSecretName | default (printf "%s-secrets" (include "crowcloud.fullname" .)) }}
+                  key: {{ .Values.api.env.databaseUrlSecretKey | default "database-url" }}
+            {{- end }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
