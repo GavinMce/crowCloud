@@ -27,7 +27,9 @@ impl From<ProxmoxError> for ProviderError {
                 status: 404,
                 message,
             } => ProviderError::NotFound(message),
-            ProxmoxError::Api { status: _, message } => ProviderError::Api(message),
+            ProxmoxError::Api { status, message } => {
+                ProviderError::Api(format!("{status}: {message}"))
+            }
             e => ProviderError::Other(e.to_string()),
         }
     }

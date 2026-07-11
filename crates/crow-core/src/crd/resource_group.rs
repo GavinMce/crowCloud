@@ -21,10 +21,14 @@ pub struct ResourceRef {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceGroupSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub infra_provider_ref: ResourceRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_provider_ref: Option<ResourceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dns_provider_ref: Option<ResourceRef>,
 }
 

@@ -9,6 +9,7 @@ members = [
     "crates/crow-cli",
     "crates/providers/crow-provider-proxmox",
     "crates/providers/crow-provider-hetzner",
+    "crates/providers/crow-provider-opnsense",
     "crates/providers/crow-provider-registry",
     "crates/resources/crow-resource-vm",
     "crates/resources/crow-resource-k8s",
@@ -49,6 +50,11 @@ sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "uuid"
 # http client
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], default-features = false }
 urlencoding = "2"
+
+# ssh (guest command execution — Proxmox's QEMU guest agent can't be relied
+# on to be present in every VM image, so we drive it over SSH instead using
+# a keypair injected via cloud-init)
+russh = "0.62"
 
 # error handling
 thiserror = "2"

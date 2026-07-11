@@ -31,6 +31,13 @@ impl InfraProvider for HetznerProvider {
     async fn stop_vm(&self, _handle: &VmHandle) -> Result<(), ProviderError> {
         todo!()
     }
+    async fn exec_in_vm(
+        &self,
+        _handle: &VmHandle,
+        _command: &str,
+    ) -> Result<String, ProviderError> {
+        todo!()
+    }
     async fn create_volume(&self, _spec: VolumeSpec) -> Result<VolumeHandle, ProviderError> {
         todo!()
     }

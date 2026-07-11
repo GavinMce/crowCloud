@@ -63,6 +63,7 @@ impl ResourceDriver for VirtualMachineDriver {
             disk_gib: cfg.disk_gib,
             image: cfg.image,
             ip: None,
+            mac: None,
             cloud_init,
             network_ref: None,
         };
@@ -116,7 +117,11 @@ impl ResourceDriver for VirtualMachineDriver {
         })
     }
 
-    async fn credentials(&self, _handle: &ResourceHandle) -> Result<Value, DriverError> {
+    async fn credentials(
+        &self,
+        _ctx: &ProvisionCtx,
+        _handle: &ResourceHandle,
+    ) -> Result<Value, DriverError> {
         // v1: bare VMs have no generated credential material (no cloud-init secret
         // management yet) — "no credentials" is a valid state, not an error.
         Ok(serde_json::json!({}))
@@ -162,6 +167,13 @@ mod tests {
         async fn stop_vm(&self, _handle: &VmHandle) -> Result<(), ProviderError> {
             Ok(())
         }
+        async fn exec_in_vm(
+            &self,
+            _handle: &VmHandle,
+            _command: &str,
+        ) -> Result<String, ProviderError> {
+            unimplemented!()
+        }
         async fn create_volume(&self, _spec: VolumeSpec) -> Result<VolumeHandle, ProviderError> {
             unimplemented!()
         }
@@ -181,6 +193,7 @@ mod tests {
             infra,
             network: None,
             dns: None,
+            ipam: None,
             config,
             project: "proj".into(),
             resource_group: "rg".into(),

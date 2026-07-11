@@ -13,3 +13,6 @@ rules:
   - apiGroups: ["crow.cloud"]
     resources: ["virtualmachines"]
     verbs: ["create", "delete"]
+  - apiGroups: ["crow.cloud"]
+    resources: ["k8sclusters"]
+    verbs: ["create", "delete"]

@@ -18,6 +18,9 @@ pub trait InfraProvider: Send + Sync {
     async fn vm_status(&self, handle: &VmHandle) -> Result<VmStatus, ProviderError>;
     async fn start_vm(&self, handle: &VmHandle) -> Result<(), ProviderError>;
     async fn stop_vm(&self, handle: &VmHandle) -> Result<(), ProviderError>;
+    /// Run a command inside the guest via the provider's remote-exec
+    /// mechanism (e.g. the Proxmox QEMU guest agent) and return its stdout.
+    async fn exec_in_vm(&self, handle: &VmHandle, command: &str) -> Result<String, ProviderError>;
 
     async fn create_volume(&self, spec: VolumeSpec) -> Result<VolumeHandle, ProviderError>;
     async fn delete_volume(&self, handle: &VolumeHandle) -> Result<(), ProviderError>;
@@ -53,10 +56,23 @@ pub trait DnsProvider: Send + Sync {
     ) -> Result<(), ProviderError>;
 }
 
+/// IP address management — reserving a static IP (typically tied to a MAC
+/// address via a DHCP static mapping) ahead of creating the VM that will
+/// use it, so the IP is known deterministically before boot.
+#[async_trait]
+pub trait IpamProvider: Send + Sync {
+    fn provider_type(&self) -> &'static str;
+    fn name(&self) -> &str;
+
+    async fn allocate_ip(&self, spec: IpAllocSpec) -> Result<IpAllocHandle, ProviderError>;
+    async fn release_ip(&self, handle: &IpAllocHandle) -> Result<(), ProviderError>;
+}
+
 pub struct ProvisionCtx {
     pub infra: Arc<dyn InfraProvider>,
     pub network: Option<Arc<dyn NetworkProvider>>,
     pub dns: Option<Arc<dyn DnsProvider>>,
+    pub ipam: Option<Arc<dyn IpamProvider>>,
     pub config: Value,
     pub project: String,
     pub resource_group: String,
@@ -80,5 +96,13 @@ pub trait ResourceDriver: Send + Sync {
         handle: &ResourceHandle,
     ) -> Result<ResourcePhase, DriverError>;
     async fn endpoints(&self, handle: &ResourceHandle) -> Result<Vec<Endpoint>, DriverError>;
-    async fn credentials(&self, handle: &ResourceHandle) -> Result<Value, DriverError>;
+    /// Takes `ctx` (not just `handle`) because some drivers need live
+    /// provider access to retrieve credentials — e.g. K8sCluster fetches
+    /// the kubeconfig via `ctx.infra.exec_in_vm` rather than storing it in
+    /// the handle.
+    async fn credentials(
+        &self,
+        ctx: &ProvisionCtx,
+        handle: &ResourceHandle,
+    ) -> Result<Value, DriverError>;
 }

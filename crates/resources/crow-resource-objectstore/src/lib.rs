@@ -38,7 +38,11 @@ impl ResourceDriver for ObjectStoreDriver {
     async fn endpoints(&self, _handle: &ResourceHandle) -> Result<Vec<Endpoint>, DriverError> {
         todo!("ObjectStore endpoints")
     }
-    async fn credentials(&self, _handle: &ResourceHandle) -> Result<Value, DriverError> {
+    async fn credentials(
+        &self,
+        _ctx: &ProvisionCtx,
+        _handle: &ResourceHandle,
+    ) -> Result<Value, DriverError> {
         todo!("ObjectStore credentials")
     }
 }

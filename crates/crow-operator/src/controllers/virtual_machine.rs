@@ -131,6 +131,7 @@ async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError>
         infra,
         network: None,
         dns: None,
+        ipam: None,
         config: serde_json::json!({
             "cpu": vm.spec.cpu,
             "memory_mib": (vm.spec.memory_gib as u64) * 1024,
@@ -159,29 +160,46 @@ async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError>
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let ready_status = if matches!(new_phase, ResourcePhase::Ready) {
+        "True".to_string()
+    } else {
+        "False".to_string()
+    };
+    // Only bump `last_transition_time` on an actual transition — otherwise
+    // every reconcile "changes" the status (even when nothing meaningful
+    // did), which re-triggers the watch that drives reconciliation and
+    // causes a self-sustaining reconcile storm (each pass re-runs live
+    // provider calls, which starved a real k3s node's CPU during bring-up).
+    let previous_ready_status = vm
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.iter().find(|c| c.condition_type == "Ready"));
+    let last_transition_time = match previous_ready_status {
+        Some(c) if c.status == ready_status => c.last_transition_time.clone(),
+        _ => Some(Utc::now().to_rfc3339()),
+    };
+
     let status = VirtualMachineStatus {
         phase: Some(new_phase.to_string()),
         ip: vm_ip,
         provider_id: Some(provider_id.to_string()),
         conditions: vec![Condition {
             condition_type: "Ready".to_string(),
-            status: if matches!(new_phase, ResourcePhase::Ready) {
-                "True".to_string()
-            } else {
-                "False".to_string()
-            },
+            status: ready_status,
             reason: Some(new_phase.to_string()),
             message: None,
-            last_transition_time: Some(Utc::now().to_rfc3339()),
+            last_transition_time,
         }],
     };
-    let api: Api<VirtualMachine> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
-    api.patch_status(
-        &name,
-        &PatchParams::default(),
-        &Patch::Merge(serde_json::json!({ "status": status })),
-    )
-    .await?;
+    if vm.status.as_ref() != Some(&status) {
+        let api: Api<VirtualMachine> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+        api.patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({ "status": status })),
+        )
+        .await?;
+    }
 
     sqlx::query("UPDATE resources SET phase = $1, handle = $2, updated_at = NOW() WHERE id = $3")
         .bind(new_phase.to_string())
@@ -220,6 +238,7 @@ async fn cleanup(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileErro
             infra,
             network: None,
             dns: None,
+            ipam: None,
             config: serde_json::Value::Null,
             project: String::new(),
             resource_group: String::new(),

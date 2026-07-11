@@ -12,6 +12,10 @@ pub struct VmSpec {
     pub disk_gib: u64,
     pub image: String,
     pub ip: Option<IpAddr>,
+    /// Pin the NIC's MAC address (e.g. so a pre-reserved DHCP/static-mapping
+    /// IP is guaranteed to land on this VM). `None` lets the provider
+    /// auto-generate one.
+    pub mac: Option<String>,
     pub cloud_init: Option<CloudInitConfig>,
     pub network_ref: Option<String>,
 }
@@ -186,4 +190,19 @@ pub struct Endpoint {
     pub name: String,
     pub url: String,
     pub description: Option<String>,
+}
+
+// --- IPAM ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpAllocSpec {
+    pub hostname: String,
+    pub mac: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpAllocHandle {
+    pub ip: IpAddr,
+    pub mac: String,
+    pub provider_id: String,
 }

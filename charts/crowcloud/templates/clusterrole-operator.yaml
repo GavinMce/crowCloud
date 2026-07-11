@@ -25,3 +25,15 @@ rules:
   - apiGroups: ["crow.cloud"]
     resources: ["virtualmachines/status"]
     verbs: ["get", "update", "patch"]
+  # Same, for K8sCluster CRs (crates/crow-operator/src/controllers/k8s_cluster.rs).
+  - apiGroups: ["crow.cloud"]
+    resources: ["k8sclusters"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["crow.cloud"]
+    resources: ["k8sclusters/status"]
+    verbs: ["get", "update", "patch"]
+  # Writes the fetched kubeconfig as a Secret in crow-resources
+  # (crates/crow-operator/src/controllers/k8s_cluster.rs::write_kubeconfig_secret).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch", "delete"]

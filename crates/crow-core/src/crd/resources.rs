@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::resource_group::ResourceRef;
 
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Condition {
     pub condition_type: String,
@@ -33,6 +33,7 @@ pub struct VirtualMachineSpec {
     /// reference — there is no `Provider` custom resource today, so `namespace`
     /// is unused. The operator resolves this by querying Postgres directly.
     pub infra_provider_ref: ResourceRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip_pool_ref: Option<ResourceRef>,
     pub cpu: u32,
     pub memory_gib: u32,
@@ -40,7 +41,7 @@ pub struct VirtualMachineSpec {
     pub image: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct VirtualMachineStatus {
     pub phase: Option<String>,
@@ -64,10 +65,24 @@ pub struct VirtualMachineStatus {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct K8sClusterSpec {
+    /// `name` holds the Postgres `providers.name` value (same convention as
+    /// `VirtualMachineSpec.infra_provider_ref`).
     pub infra_provider_ref: ResourceRef,
+    /// `name` holds the Postgres `providers.name` of an IPAM provider (e.g.
+    /// an OPNsense provider row) used to reserve static IPs for cluster
+    /// nodes — not a `Provider`/`IpPool` CRD reference (no `IpPool`
+    /// controller exists). `None` falls back to provider-assigned DHCP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip_pool_ref: Option<ResourceRef>,
+    /// Only `K3s` is implemented today; `Rke2` is accepted by the schema but
+    /// rejected at provision time.
     pub distribution: K8sDistribution,
+    /// k3s version to pin via `INSTALL_K3S_VERSION` (empty string installs
+    /// whatever `get.k3s.io` currently serves as latest).
     pub version: String,
+    /// Numeric Proxmox template VMID to clone control-plane/worker nodes
+    /// from (same convention as `VirtualMachineSpec.image`).
+    pub image: String,
     pub control_plane: ControlPlaneSpec,
     pub workers: WorkerSpec,
     pub network: K8sNetworkSpec,
@@ -88,6 +103,7 @@ pub struct ControlPlaneSpec {
     pub memory_gib: u32,
     pub disk_gib: u32,
     /// Required when count > 1; kube-vip will hold this VIP
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vip: Option<String>,
 }
 
@@ -106,7 +122,9 @@ pub struct K8sNetworkSpec {
     pub pod_cidr: String,
     pub service_cidr: String,
     /// IP range handed to MetalLB for LoadBalancer services
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lb_pool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lb_mode: Option<LbMode>,
 }
 
@@ -116,7 +134,7 @@ pub enum LbMode {
     Bgp,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct K8sClusterStatus {
     pub phase: Option<String>,
@@ -142,6 +160,7 @@ pub struct K8sClusterStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ObjectStoreSpec {
     pub infra_provider_ref: ResourceRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip_pool_ref: Option<ResourceRef>,
     pub cpu: u32,
     pub memory_gib: u32,
@@ -173,6 +192,7 @@ pub struct ObjectStoreStatus {
 #[serde(rename_all = "camelCase")]
 pub struct DatabaseSpec {
     pub infra_provider_ref: ResourceRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip_pool_ref: Option<ResourceRef>,
     pub engine: DatabaseEngine,
     pub version: String,

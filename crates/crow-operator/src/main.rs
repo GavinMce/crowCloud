@@ -15,7 +15,10 @@ async fn install_crds(client: &Client) -> anyhow::Result<()> {
     let crds: Api<CustomResourceDefinition> = Api::all(client.clone());
     let pp = PatchParams::apply("crow-operator").force();
 
-    for crd in [crow_core::crd::resources::VirtualMachine::crd()] {
+    for crd in [
+        crow_core::crd::resources::VirtualMachine::crd(),
+        crow_core::crd::resources::K8sCluster::crd(),
+    ] {
         let name = crd
             .metadata
             .name

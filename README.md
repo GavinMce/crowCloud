@@ -36,10 +36,12 @@ ____________________________________________________________________/\\\\\\\\\__
 - [Configuration](#configuration)
 - [The Provider System](#the-provider-system)
   - [InfraProvider trait](#infraprovider-trait)
+  - [IpamProvider trait](#ipamprovider-trait)
   - [NetworkProvider and DnsProvider](#networkprovider-and-dnsprovider)
   - [ResourceDriver trait](#resourcedriver-trait)
 - [Providers](#providers)
   - [Proxmox VE](#proxmox-ve)
+  - [OPNsense (IPAM)](#opnsense-ipam)
   - [Hetzner Cloud](#hetzner-cloud)
   - [Implementing a new provider](#implementing-a-new-provider)
 - [Kubernetes Operator](#kubernetes-operator)
@@ -62,7 +64,8 @@ Most cloud management platforms are either locked to one provider or require exp
 
 ## Features
 
-- **Multi-provider infrastructure** — A single `InfraProvider` trait abstracts VM lifecycle, networking, and storage. Proxmox VE is fully implemented; Hetzner Cloud is a stub ready for completion. Any bare-metal or public cloud can be added as a new crate.
+- **Multi-provider infrastructure** — A single `InfraProvider` trait abstracts VM lifecycle, networking, storage, and guest command execution (over SSH). Proxmox VE is fully implemented; Hetzner Cloud is a stub ready for completion. Any bare-metal or public cloud can be added as a new crate.
+- **Managed HA Kubernetes** — `crow-resource-k8s` provisions a full HA k3s cluster (kube-vip for control-plane failover) on Proxmox VMs, with static IPs allocated via an `IpamProvider` (OPNsense's Kea DHCPv4 backend) and the kubeconfig fetched automatically into a Kubernetes Secret.
 - **Kubernetes operator** — `crow-operator` watches custom resources (CRDs) in your cluster and reconciles them against the configured provider. Supports VMs, networks, volumes, object stores, databases, and K8s clusters.
 - **REST API** — `crow-api` exposes a versioned HTTP API (`/api/v1`) backed by PostgreSQL. JWT authentication, project and resource-group scoping, full audit log.
 - **CLI** — The `crow` binary covers the full workflow: login, project/resource-group context, VM management, Kubernetes, databases, object storage, expose/domain/tunnel operations, and provider registration.
@@ -89,24 +92,28 @@ Most cloud management platforms are either locked to one provider or require exp
                     │  │  Axum REST   │          ┌────────────▼─────────────┐ │
                     │  │  /api/v1     │          │       crow-core          │ │
                     │  └──────┬───────┘          │  InfraProvider trait     │ │
-                    │         │                  │  NetworkProvider trait   │ │
-                    │  ┌──────▼───────┐          │  DnsProvider trait       │ │
-                    │  │  crow-auth   │          │  ResourceDriver trait    │ │
-                    │  │  JWT · bcrypt│          │  CRD structs · types     │ │
-                    │  └──────────────┘          └──────┬───────────────────┘ │
-                    │                                   │                     │
-                    │  ┌──────────────┐     ┌──────────▼──────────┐          │
-                    │  │   crow-db    │     │      Providers       │          │
-                    │  │  SQLx · PG   │     │  crow-provider-      │          │
-                    │  │  migrations  │     │    proxmox  ✓        │          │
-                    │  └──────────────┘     │  crow-provider-      │          │
-                    │                       │    hetzner  (stub)   │          │
-                    │  ┌──────────────┐     └─────────────────────┘          │
-                    │  │ crow-vps-    │                                       │
-                    │  │ agent        │     ┌─────────────────────┐           │
-                    │  │ on-host ops  │     │     Resources        │           │
-                    │  └──────────────┘     │  crow-resource-vm   │           │
+                    │         │                  │  IpamProvider trait      │ │
+                    │  ┌──────▼───────┐          │  NetworkProvider trait   │ │
+                    │  │  crow-auth   │          │  DnsProvider trait       │ │
+                    │  │  JWT · bcrypt│          │  ResourceDriver trait    │ │
+                    │  └──────────────┘          │  CRD structs · types     │ │
+                    │                             └──────┬───────────────────┘ │
+                    │  ┌──────────────┐                 │                     │
+                    │  │   crow-db    │     ┌──────────▼──────────┐          │
+                    │  │  SQLx · PG   │     │      Providers       │          │
+                    │  │  migrations  │     │  crow-provider-      │          │
+                    │  └──────────────┘     │    proxmox  ✓        │          │
+                    │                       │  crow-provider-      │          │
+                    │  ┌──────────────┐     │    opnsense (IPAM) ✓ │          │
+                    │  │ crow-vps-    │     │  crow-provider-      │          │
+                    │  │ agent        │     │    hetzner  (stub)   │          │
+                    │  │ on-host ops  │     └─────────────────────┘          │
+                    │  └──────────────┘                                       │
+                    │                       ┌─────────────────────┐           │
+                    │                       │     Resources        │           │
+                    │                       │  crow-resource-vm   │           │
                     │                       │  crow-resource-k8s  │           │
+                    │                       │    HA k3s ✓          │           │
                     │                       │  crow-resource-db   │           │
                     │                       │  crow-resource-      │           │
                     │                       │    objectstore      │           │
@@ -122,17 +129,19 @@ The repository is a Cargo workspace. All dependency versions are pinned once in 
 
 | Crate | Path | Role |
 |---|---|---|
-| `crow-core` | `crates/crow-core` | Contract layer: `InfraProvider`, `NetworkProvider`, `DnsProvider`, `ResourceDriver` traits; all shared types (`VmSpec`, `VolumeSpec`, …); CRD structs; `ProviderError` |
+| `crow-core` | `crates/crow-core` | Contract layer: `InfraProvider`, `IpamProvider`, `NetworkProvider`, `DnsProvider`, `ResourceDriver` traits; all shared types (`VmSpec`, `VolumeSpec`, …); CRD structs; `ProviderError` |
 | `crow-api` | `crates/crow-api` | Axum 0.8 REST API on port 8080. Routes nested at `/api/v1`. State: `kube::Client` + `PgPool`. Returns `ApiError` (JSON `{ "error": "…" }`) |
 | `crow-operator` | `crates/crow-operator` | kube-rs 4 operator. Watches CRDs, reconciles resources by dispatching to `InfraProvider`. Runs in-cluster or with ambient kubeconfig |
 | `crow-auth` | `crates/crow-auth` | JWT issuance and validation (HS256), bcrypt password hashing |
 | `crow-db` | `crates/crow-db` | SQLx connection pool, migration runner, query helpers. Migrations in `crates/crow-db/migrations/` |
 | `crow-cli` | `crates/crow-cli` | `crow` binary. Thin REST client using clap subcommands. Supports `--output table\|json` and `CROW_SERVER` env override |
 | `crow-vps-agent` | `crates/crow-vps-agent` | Lightweight Axum agent deployed on bare-metal VPS hosts. Handles tunnel and on-host operations. Listens on `WIREGUARD_ADDR` (default `10.200.0.1:9090`) |
-| `crow-provider-proxmox` | `crates/providers/crow-provider-proxmox` | Full Proxmox VE implementation of `InfraProvider`. VM clone → cloud-init → task polling → start/stop/delete. Bridge and storage management |
+| `crow-provider-proxmox` | `crates/providers/crow-provider-proxmox` | Full Proxmox VE implementation of `InfraProvider`. VM clone → native cloud-init → task polling → SSH-based guest exec → start/stop/delete. Bridge and storage management |
+| `crow-provider-opnsense` | `crates/providers/crow-provider-opnsense` | `IpamProvider` implementation against OPNsense's Kea DHCPv4 API — reserves/releases static IPs by MAC address |
 | `crow-provider-hetzner` | `crates/providers/crow-provider-hetzner` | Hetzner Cloud stub — trait implemented, API calls not yet wired |
+| `crow-provider-registry` | `crates/providers/crow-provider-registry` | Sync factories (`build_infra_provider`, `build_ipam_provider`) shared by `crow-api` and `crow-operator` so neither depends directly on concrete provider crates |
 | `crow-resource-vm` | `crates/resources/crow-resource-vm` | `ResourceDriver` for bare VMs |
-| `crow-resource-k8s` | `crates/resources/crow-resource-k8s` | `ResourceDriver` for managed Kubernetes clusters |
+| `crow-resource-k8s` | `crates/resources/crow-resource-k8s` | `ResourceDriver` for HA k3s clusters — kube-vip control-plane failover, OPNsense-allocated static IPs, SSH-driven bootstrap, automatic kubeconfig fetch |
 | `crow-resource-database` | `crates/resources/crow-resource-database` | `ResourceDriver` for databases |
 | `crow-resource-objectstore` | `crates/resources/crow-resource-objectstore` | `ResourceDriver` for object storage buckets |
 
@@ -289,7 +298,7 @@ The operator uses the ambient kubeconfig: in-cluster (`KUBERNETES_SERVICE_HOST`)
 
 ## The Provider System
 
-crowCloud's extensibility is built on three async traits defined in `crow-core`. Every provider crate implements one or more of them. The operator dispatches to providers via `Arc<dyn InfraProvider>` — no enum matching, no provider-specific code outside the provider crate.
+crowCloud's extensibility is built on four async traits defined in `crow-core`. Every provider crate implements one or more of them. The operator dispatches to providers via `Arc<dyn InfraProvider>` (and, separately, `Arc<dyn IpamProvider>`) — no enum matching, no provider-specific code outside the provider crate.
 
 ### InfraProvider trait
 
@@ -305,6 +314,7 @@ pub trait InfraProvider: Send + Sync {
     async fn vm_status(&self, handle: &VmHandle) -> Result<VmStatus, ProviderError>;
     async fn start_vm(&self, handle: &VmHandle) -> Result<(), ProviderError>;
     async fn stop_vm(&self, handle: &VmHandle) -> Result<(), ProviderError>;
+    async fn exec_in_vm(&self, handle: &VmHandle, command: &str) -> Result<String, ProviderError>;
 
     // Storage
     async fn create_volume(&self, spec: VolumeSpec) -> Result<VolumeHandle, ProviderError>;
@@ -320,7 +330,7 @@ pub trait InfraProvider: Send + Sync {
 
 | Type | Fields |
 |---|---|
-| `VmSpec` | `name`, `cpu`, `memory_mib`, `disk_gib`, `image`, `ip?`, `cloud_init?`, `network_ref?` |
+| `VmSpec` | `name`, `cpu`, `memory_mib`, `disk_gib`, `image`, `ip?`, `mac?`, `cloud_init?`, `network_ref?` |
 | `VmHandle` | `provider_type`, `provider_id`, `ip?`, `name` — opaque reference returned after creation |
 | `VmStatus` | `Running` / `Stopped` / `Starting` / `Stopping` / `Error(String)` / `Unknown` |
 | `VolumeSpec` | `name`, `size_gib`, `storage_pool?` |
@@ -328,6 +338,22 @@ pub trait InfraProvider: Send + Sync {
 | `CloudInitConfig` | `hostname`, `user_data?`, `network_config?` |
 
 Error mapping: provider-specific errors (e.g. `ProxmoxError`) implement `From<ProxmoxError> for ProviderError` and compose with `?`.
+
+`exec_in_vm` runs a command inside the guest and returns its output. In `crow-provider-proxmox` this goes over SSH, authenticated with a keypair injected into every VM via the native `sshkeys`/`ciuser` cloud-init fields — see [Proxmox VE](#proxmox-ve) below.
+
+### IpamProvider trait
+
+```rust
+#[async_trait]
+pub trait IpamProvider: Send + Sync {
+    fn provider_type(&self) -> &'static str;
+    fn name(&self) -> &str;
+    async fn allocate_ip(&self, spec: IpAllocSpec) -> Result<IpAllocHandle, ProviderError>;
+    async fn release_ip(&self, handle: &IpAllocHandle) -> Result<(), ProviderError>;
+}
+```
+
+Used by resource drivers that need a static IP known *before* VM creation — e.g. `crow-resource-k8s` allocates an IP for a generated MAC, then passes both into `VmSpec` so the VM boots with the address already configured (no post-boot IP-discovery race). `ProvisionCtx.ipam: Option<Arc<dyn IpamProvider>>` carries the resolved provider; only resource types that reference an IPAM provider get one.
 
 ### NetworkProvider and DnsProvider
 
@@ -365,11 +391,11 @@ pub trait ResourceDriver: Send + Sync {
     async fn deprovision(&self, ctx: &ProvisionCtx, handle: &ResourceHandle) -> Result<(), DriverError>;
     async fn reconcile(&self, ctx: &ProvisionCtx, handle: &ResourceHandle) -> Result<ResourcePhase, DriverError>;
     async fn endpoints(&self, handle: &ResourceHandle) -> Result<Vec<Endpoint>, DriverError>;
-    async fn credentials(&self, handle: &ResourceHandle) -> Result<Value, DriverError>;
+    async fn credentials(&self, ctx: &ProvisionCtx, handle: &ResourceHandle) -> Result<Value, DriverError>;
 }
 ```
 
-`ProvisionCtx` carries `Arc<dyn InfraProvider>`, optional `Arc<dyn NetworkProvider>` and `Arc<dyn DnsProvider>`, and the project/resource-group/resource-name scope.
+`ProvisionCtx` carries `Arc<dyn InfraProvider>`, optional `Arc<dyn IpamProvider>`, `Arc<dyn NetworkProvider>` and `Arc<dyn DnsProvider>`, and the project/resource-group/resource-name scope. `credentials` takes `ctx` (not just the handle) because fetching them can require a live provider call — `crow-resource-k8s` uses it to SSH into a control-plane node and read back the kubeconfig.
 
 **ResourcePhase lifecycle:**
 
@@ -393,9 +419,10 @@ Pending → ProvisioningInfra → Bootstrapping → HealthChecking → Ready
 
 **What it does:**
 
-- **VM creation** — Clones a template VM by VMID, resizes the root disk, uploads a cloud-init snippet to Proxmox storage (multipart), sets the cloud-init drive, then starts the VM. Each async Proxmox call returns a UPID (task ID) which is polled every 2 s until the task settles.
+- **VM creation** — Clones a template VM by VMID, applies config (cores, memory, network, native cloud-init `ipconfig0`/`ciuser`/`sshkeys`), resizes the root disk, then starts the VM. Each async Proxmox call returns a UPID (task ID) which is polled every 2 s until the task settles. Any failure after the clone succeeds (config, resize, start) triggers cleanup of the clone — a failed or retried creation never leaks a VM.
 - **VM deletion** — Stops the VM if running (task-awaited), then deletes it.
 - **VM status** — Maps Proxmox `qmpstatus` → `VmStatus`.
+- **Guest command execution** — `exec_in_vm` runs a command over SSH, authenticated with a keypair generated via `crow_provider_proxmox::ssh::generate_keypair` and injected into every VM at creation time via the `sshkeys`/`ciuser` cloud-init fields. This is deliberate, not the QEMU guest agent: the `"agent":1` VM flag only tells Proxmox to listen for the agent, it doesn't install `qemu-guest-agent` in the guest, and most stock cloud images don't ship it.
 - **Networking** — Creates and deletes Linux bridges via the Proxmox network API.
 - **Storage** — Volume intent records; disk allocation happens at VM creation time.
 
@@ -407,14 +434,36 @@ Pending → ProvisioningInfra → Bootstrapping → HealthChecking → Ready
 | `token_id` | `String` | API token in `user@realm!tokenname` format |
 | `token_secret` | `String` | Token secret UUID |
 | `node` | `String` | Target Proxmox node name, e.g. `pve` |
-| `default_storage` | `String` | Storage ID for clones and cloud-init snippets, e.g. `local-lvm` |
+| `default_storage` | `String` | Storage ID for clones and disks, e.g. `local-lvm` |
+| `snippets_storage` | `String` | Storage ID for cloud-init snippets (unused on Proxmox VE 9.2 — see limitations below); defaults to `local` |
 | `default_bridge` | `String` | Default Linux bridge, e.g. `vmbr0` |
+| `ssh_user` | `String` | Login user injected via `ciuser`; defaults to `root` |
+| `ssh_private_key` / `ssh_public_key` | `String` | OpenSSH-format keypair used for `exec_in_vm` — generate once with `crow_provider_proxmox::ssh::generate_keypair`, store both in the provider's config |
 | `tls_insecure` | `bool` | Skip TLS certificate verification (needed for self-signed certs) |
 
 **Known limitations:**
 
-- Cloud-init snippet files are uploaded to Proxmox storage before VM creation. If VM creation fails after the upload, the snippet is orphaned — there is currently no cleanup path.
+- On Proxmox VE 9.2, the `/nodes/{node}/storage/{storage}/upload` API's `content` parameter is hard-limited to `iso, vztmpl, import` — confirmed live — so cloud-init custom `user_data`/`network_config` snippets cannot be uploaded via the REST API on this version regardless of the storage's own configured content types. `VmSpec.cloud_init.user_data` is still supported in the code (for storage backends/versions where it does work); `crow-resource-k8s` avoids it entirely by pushing its bootstrap script over SSH after boot instead.
 - `wait_task` polls every 2 s with no timeout; a stuck Proxmox task will block indefinitely.
+
+### OPNsense (IPAM)
+
+`crow-provider-opnsense` implements `IpamProvider` against OPNsense's **Kea DHCPv4** API (`/api/kea/dhcpv4/*`) — not the legacy ISC dhcpd backend (`/api/dhcpv4/*`), which uses a different endpoint set and field names entirely. Kea DHCPv4 must already be enabled and have a subnet configured in the OPNsense UI (Services → Kea DHCPv4) before use; the provider attaches reservations to that subnet, it doesn't create one.
+
+**What it does:**
+
+- **`allocate_ip`** — resolves the configured subnet CIDR to its Kea subnet UUID, scans existing reservations to find a free address in the configured range, then adds a reservation keyed by MAC address (`hw_address` in Kea's schema, not `mac`) and triggers `POST /api/kea/service/reconfigure` to apply it.
+- **`release_ip`** — deletes the reservation by UUID and reconfigures.
+
+**Configuration:**
+
+| Field | Type | Description |
+|---|---|---|
+| `url` | `String` | OPNsense base URL, e.g. `https://opnsense.example.com` |
+| `api_key` / `api_secret` | `String` | API credentials, sent as HTTP Basic auth |
+| `subnet_cidr` | `String` | CIDR of an existing Kea DHCPv4 subnet, e.g. `192.168.100.0/24` |
+| `range_start` / `range_end` | `Ipv4Addr` | Address range within the subnet that crowCloud is allowed to allocate from |
+| `tls_insecure` | `bool` | Skip TLS certificate verification |
 
 ### Hetzner Cloud
 
@@ -433,7 +482,7 @@ Pending → ProvisioningInfra → Bootstrapping → HealthChecking → Ready
    ]
    ```
 
-3. Implement `InfraProvider` (and optionally `NetworkProvider`, `DnsProvider`):
+3. Implement `InfraProvider` (and optionally `IpamProvider`, `NetworkProvider`, `DnsProvider` — a provider crate can implement more than one, as `crow-provider-opnsense` does with `IpamProvider` alone):
    ```rust
    use crow_core::{traits::InfraProvider, types::*, error::ProviderError};
    use async_trait::async_trait;

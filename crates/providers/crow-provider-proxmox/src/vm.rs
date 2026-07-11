@@ -7,16 +7,21 @@ use crow_core::types::{VmHandle, VmSpec, VmStatus};
 
 use crate::client::ProxmoxClient;
 use crate::error::ProxmoxError;
+use crate::ssh;
 
 #[derive(Deserialize)]
 struct QemuStatus {
     status: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_vm(
     client: &ProxmoxClient,
     default_storage: &str,
+    snippets_storage: &str,
     default_bridge: &str,
+    ssh_user: &str,
+    ssh_public_key: &str,
     spec: &VmSpec,
 ) -> Result<VmHandle, ProxmoxError> {
     let template_vmid: u32 = spec.image.parse().map_err(|_| ProxmoxError::Api {
@@ -62,13 +67,73 @@ pub async fn create_vm(
         return Err(e);
     }
 
+    // From here on, the VM exists on Proxmox. Any failure in configuring,
+    // resizing, or starting it must clean up the clone — otherwise it's
+    // orphaned with no cleanup path (this bit us: a retrying operator
+    // reconcile leaked a VM roughly every 90s because only clone-timeout and
+    // start-failure were covered).
+    match configure_and_start(
+        client,
+        snippets_storage,
+        default_bridge,
+        ssh_user,
+        ssh_public_key,
+        vmid,
+        spec,
+    )
+    .await
+    {
+        Ok(()) => Ok(VmHandle {
+            provider_type: "proxmox".to_string(),
+            provider_id: vmid.to_string(),
+            ip: spec.ip,
+            name: spec.name.clone(),
+        }),
+        Err(e) => {
+            warn!("VM {vmid} setup failed ({e}), cleaning up");
+            let handle = VmHandle {
+                provider_type: "proxmox".to_string(),
+                provider_id: vmid.to_string(),
+                ip: spec.ip,
+                name: spec.name.clone(),
+            };
+            let _ = delete_vm(client, &handle).await;
+            Err(e)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn configure_and_start(
+    client: &ProxmoxClient,
+    snippets_storage: &str,
+    default_bridge: &str,
+    ssh_user: &str,
+    ssh_public_key: &str,
+    vmid: u32,
+    spec: &VmSpec,
+) -> Result<(), ProxmoxError> {
     // Build VM config.
     let bridge = spec.network_ref.as_deref().unwrap_or(default_bridge);
+    let net0 = match &spec.mac {
+        Some(mac) => format!("virtio={mac},bridge={bridge}"),
+        None => format!("virtio,bridge={bridge}"),
+    };
+    // `sshkeys` is one of the few Proxmox config params that must be
+    // urlencoded by the caller — Proxmox stores VM config as flat
+    // `key: value` text and un-escapes the value itself when reading it
+    // back, so the raw public key (which contains spaces) would otherwise
+    // corrupt the config file.
     let mut cfg: Vec<(String, String)> = vec![
         ("cores".into(), spec.cpu.to_string()),
         ("memory".into(), spec.memory_mib.to_string()),
-        ("net0".into(), format!("virtio,bridge={bridge}")),
+        ("net0".into(), net0),
         ("citype".into(), "nocloud".into()),
+        ("ciuser".into(), ssh_user.to_string()),
+        (
+            "sshkeys".into(),
+            urlencoding::encode(ssh_public_key).into_owned(),
+        ),
     ];
 
     let mut cicustom_parts: Vec<String> = Vec::new();
@@ -76,13 +141,13 @@ pub async fn create_vm(
     if let Some(ci) = &spec.cloud_init {
         if let Some(user_data) = &ci.user_data {
             let filename = format!("vm-{vmid}-user.yaml");
-            upload_snippet(client, default_storage, &filename, user_data).await?;
-            cicustom_parts.push(format!("user={default_storage}:snippets/{filename}"));
+            upload_snippet(client, snippets_storage, &filename, user_data).await?;
+            cicustom_parts.push(format!("user={snippets_storage}:snippets/{filename}"));
         }
         if let Some(net_cfg) = &ci.network_config {
             let filename = format!("vm-{vmid}-network.yaml");
-            upload_snippet(client, default_storage, &filename, net_cfg).await?;
-            cicustom_parts.push(format!("network={default_storage}:snippets/{filename}"));
+            upload_snippet(client, snippets_storage, &filename, net_cfg).await?;
+            cicustom_parts.push(format!("network={snippets_storage}:snippets/{filename}"));
         }
     }
 
@@ -124,25 +189,7 @@ pub async fn create_vm(
             &[] as &[(&str, &str)],
         )
         .await?;
-
-    if let Err(e) = client.wait_task(&start_upid, 120).await {
-        warn!("VM {vmid} failed to start ({e}), cleaning up");
-        let handle = VmHandle {
-            provider_type: "proxmox".to_string(),
-            provider_id: vmid.to_string(),
-            ip: spec.ip,
-            name: spec.name.clone(),
-        };
-        let _ = delete_vm(client, &handle).await;
-        return Err(e);
-    }
-
-    Ok(VmHandle {
-        provider_type: "proxmox".to_string(),
-        provider_id: vmid.to_string(),
-        ip: spec.ip,
-        name: spec.name.clone(),
-    })
+    client.wait_task(&start_upid, 120).await
 }
 
 pub async fn delete_vm(client: &ProxmoxClient, handle: &VmHandle) -> Result<(), ProxmoxError> {
@@ -204,6 +251,29 @@ pub async fn stop_vm(client: &ProxmoxClient, handle: &VmHandle) -> Result<(), Pr
     client.wait_task(&upid, 120).await
 }
 
+/// Runs `command` inside the guest over SSH (authenticating with the
+/// provider's keypair, injected into every VM via the native `sshkeys`
+/// cloud-init field at creation time) and returns its stdout.
+///
+/// SSH rather than the QEMU guest agent: the agent flag only tells Proxmox
+/// to *listen* for it, it doesn't install `qemu-guest-agent` in the guest —
+/// confirmed live that crowCloud's reference template doesn't have it
+/// running, so relying on it isn't safe for arbitrary VM images.
+///
+/// 300s covers slower callers like a k3s bootstrap script (`curl | sh -`,
+/// which downloads a ~60MB binary) as well as quick readyz/cat checks.
+pub async fn exec_in_vm(
+    ssh_user: &str,
+    ssh_private_key: &str,
+    handle: &VmHandle,
+    command: &str,
+) -> Result<String, ProxmoxError> {
+    let ip = handle
+        .ip
+        .ok_or_else(|| ProxmoxError::Parse("VM has no known IP for SSH exec".to_string()))?;
+    ssh::exec(ip, ssh_user, ssh_private_key, command, 300).await
+}
+
 // --- helpers ---
 
 async fn upload_snippet(
@@ -212,11 +282,15 @@ async fn upload_snippet(
     filename: &str,
     content: &str,
 ) -> Result<(), ProxmoxError> {
+    // Proxmox's /storage/{storage}/upload endpoint expects the file's
+    // multipart field to be named "filename" itself (not "file" with a
+    // separate "filename" text field) — confirmed against a real Proxmox
+    // pveproxy log: "Content-Disposition: form-data; name=\"file\" for file
+    // upload, expected 'filename'".
     let form = reqwest::multipart::Form::new()
         .text("content", "snippets")
-        .text("filename", filename.to_string())
         .part(
-            "file",
+            "filename",
             reqwest::multipart::Part::bytes(content.as_bytes().to_vec())
                 .file_name(filename.to_string())
                 .mime_str("application/octet-stream")

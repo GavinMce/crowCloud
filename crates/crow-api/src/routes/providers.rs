@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::types::Uuid;
 
-use crow_provider_registry::build_infra_provider;
+use crow_provider_registry::validate_provider_config;
 
 use crate::{
     error::{ApiError, ApiResult},
@@ -69,7 +69,7 @@ async fn create(
     }
 
     // Validate config by attempting to build the provider now.
-    build_infra_provider(&req.provider_type, &req.config)?;
+    validate_provider_config(&req.provider_type, &req.config)?;
 
     let user_id = Uuid::parse_str(&claims.sub).ok();
 
