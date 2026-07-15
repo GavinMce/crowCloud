@@ -11,18 +11,10 @@ import { Button } from '../../ui/Button'
 import { CommandBar } from '../../ui/CommandBar'
 import { DataTable, type DataTableColumn } from '../../ui/DataTable'
 import { Modal } from '../../ui/Modal'
-import { Select } from '../../ui/Select'
 import { TextField } from '../../ui/TextField'
 import { useAuth } from '../../auth/useAuth'
 
-const PROVIDER_TYPES = [
-  { value: 'proxmox', label: 'Proxmox', enabled: true },
-  { value: 'opnsense', label: 'OPNsense', enabled: false },
-  { value: 'hetzner', label: 'Hetzner', enabled: false },
-  { value: 'cloudflare', label: 'Cloudflare', enabled: false },
-]
-
-const EMPTY_PROXMOX_FORM = {
+const EMPTY_FORM = {
   name: '',
   url: '',
   tokenId: '',
@@ -33,17 +25,18 @@ const EMPTY_PROXMOX_FORM = {
   tlsInsecure: false,
 }
 
-export function CloudHostsPage() {
+export function ProxmoxHostsPage() {
   const { isAdmin } = useAuth()
   const providers = useProviders()
   const createProvider = useCreateProvider()
   const deleteProvider = useDeleteProvider()
 
   const [createOpen, setCreateOpen] = useState(false)
-  const [providerType, setProviderType] = useState('proxmox')
-  const [form, setForm] = useState(EMPTY_PROXMOX_FORM)
+  const [form, setForm] = useState(EMPTY_FORM)
   const [error, setError] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<ProviderRow | null>(null)
+
+  const hosts = (providers.data ?? []).filter((p) => p.provider_type === 'proxmox')
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault()
@@ -51,7 +44,7 @@ export function CloudHostsPage() {
     try {
       await createProvider.mutateAsync({
         name: form.name,
-        provider_type: providerType,
+        provider_type: 'proxmox',
         config: {
           url: form.url,
           token_id: form.tokenId,
@@ -63,9 +56,9 @@ export function CloudHostsPage() {
         },
       })
       setCreateOpen(false)
-      setForm(EMPTY_PROXMOX_FORM)
+      setForm(EMPTY_FORM)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to add cloud host')
+      setError(err instanceof ApiError ? err.message : 'Failed to add Proxmox host')
     }
   }
 
@@ -77,7 +70,6 @@ export function CloudHostsPage() {
 
   const columns: DataTableColumn<ProviderRow>[] = [
     { key: 'name', header: 'Name' },
-    { key: 'provider_type', header: 'Type' },
     {
       key: 'created_at',
       header: 'Created',
@@ -101,40 +93,28 @@ export function CloudHostsPage() {
   return (
     <div className="az-page">
       <div className="az-stack-col az-gap-4">
-        <h1>Cloud hosts</h1>
+        <h1>Proxmox hosts</h1>
         <CommandBar>
           {isAdmin ? (
             <Button variant="primary" onClick={() => setCreateOpen(true)}>
               + Create
             </Button>
           ) : (
-            <p className="az-text-secondary">Only admins can add cloud hosts.</p>
+            <p className="az-text-secondary">Only admins can add Proxmox hosts.</p>
           )}
         </CommandBar>
 
         {providers.isLoading && <p>Loading…</p>}
-        {providers.isError && <p className="az-alert az-alert-danger">Failed to load cloud hosts.</p>}
-        {providers.data && providers.data.length === 0 && <p>No cloud hosts configured yet.</p>}
-        {providers.data && providers.data.length > 0 && (
-          <DataTable columns={columns} data={providers.data} keyField="id" />
+        {providers.isError && (
+          <p className="az-alert az-alert-danger">Failed to load Proxmox hosts.</p>
         )}
+        {providers.data && hosts.length === 0 && <p>No Proxmox hosts registered yet.</p>}
+        {hosts.length > 0 && <DataTable columns={columns} data={hosts} keyField="id" />}
       </div>
 
-      <Modal open={createOpen} title="Add cloud host" onClose={() => setCreateOpen(false)}>
+      <Modal open={createOpen} title="Add Proxmox host" onClose={() => setCreateOpen(false)}>
         <form onSubmit={handleCreate}>
           <div className="az-stack-col az-gap-4">
-            <Select
-              label="Type"
-              value={providerType}
-              onChange={(e) => setProviderType(e.target.value)}
-            >
-              {PROVIDER_TYPES.map((t) => (
-                <option key={t.value} value={t.value} disabled={!t.enabled}>
-                  {t.label}
-                  {t.enabled ? '' : ' (coming soon)'}
-                </option>
-              ))}
-            </Select>
             <TextField
               label="Name"
               value={form.name}
@@ -199,12 +179,12 @@ export function CloudHostsPage() {
 
       <Modal
         open={pendingDelete !== null}
-        title="Delete cloud host"
+        title="Delete Proxmox host"
         onClose={() => setPendingDelete(null)}
       >
         <div className="az-stack-col az-gap-4">
           <p>
-            Delete cloud host <strong>{pendingDelete?.name}</strong>? This cannot be undone.
+            Delete Proxmox host <strong>{pendingDelete?.name}</strong>? This cannot be undone.
           </p>
           <div className="az-stack-row az-gap-2">
             <Button variant="primary" onClick={handleDelete} disabled={deleteProvider.isPending}>

@@ -11,7 +11,9 @@ import { VirtualMachinesPage } from './hubs/compute/VirtualMachinesPage'
 import { CreateVirtualMachinePage } from './hubs/compute/CreateVirtualMachinePage'
 import { VirtualMachineDetailPage } from './hubs/compute/VirtualMachineDetailPage'
 import { ProjectsPage } from './hubs/management/ProjectsPage'
-import { CloudHostsPage } from './hubs/management/CloudHostsPage'
+import { InfrastructureOverviewPage } from './hubs/infrastructure/InfrastructureOverviewPage'
+import { AllHostsPage } from './hubs/infrastructure/AllHostsPage'
+import { ProxmoxHostsPage } from './hubs/infrastructure/ProxmoxHostsPage'
 
 export function App() {
   return (
@@ -86,8 +88,18 @@ export function App() {
             />
           </Route>
 
+          <Route path="/infrastructure" element={<HubLayout hubId="infrastructure" />}>
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<InfrastructureOverviewPage />} />
+            <Route path="all-resources" element={<AllHostsPage />} />
+            <Route path="proxmox-hosts" element={<ProxmoxHostsPage />} />
+            <Route
+              path="router-hosts"
+              element={<PlaceholderResourceTypePage hubId="infrastructure" typeId="router-hosts" />}
+            />
+          </Route>
+
           <Route path="/management/projects" element={<ProjectsPage />} />
-          <Route path="/management/cloudhosts" element={<CloudHostsPage />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

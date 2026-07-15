@@ -4,6 +4,7 @@ import {
   ContainersIcon,
   DatabaseIcon,
   NetworkIcon,
+  ServerIcon,
   StorageIcon,
 } from '../ui/icons'
 
@@ -119,6 +120,26 @@ export const HUBS: HubConfig[] = [
         label: 'Custom domains',
         status: 'placeholder',
         description: 'Custom domains and TLS certificates.',
+      },
+    ],
+  },
+  {
+    id: 'infrastructure',
+    label: 'Infrastructure',
+    description: 'Registered hosts your resources run on.',
+    icon: ServerIcon,
+    resourceTypes: [
+      {
+        id: 'proxmox-hosts',
+        label: 'Proxmox hosts',
+        status: 'live',
+        description: 'Proxmox VE hosts available to provision virtual machines on.',
+      },
+      {
+        id: 'router-hosts',
+        label: 'Router hosts',
+        status: 'placeholder',
+        description: 'OPNsense-based router/firewall hosts for networking and exposure.',
       },
     ],
   },

@@ -85,6 +85,17 @@ export function NetworkIcon(props: IconProps) {
   )
 }
 
+export function ServerIcon(props: IconProps) {
+  return base(
+    props,
+    <>
+      <rect x="3" y="3" width="14" height="5.5" rx="1" />
+      <rect x="3" y="11.5" width="14" height="5.5" rx="1" />
+      <path d="M6 5.75h.01M6 14.25h.01" />
+    </>,
+  )
+}
+
 export function ManagementIcon(props: IconProps) {
   return base(
     props,

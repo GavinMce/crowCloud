@@ -512,6 +512,10 @@
   padding: 8px 0;
   overflow-y: auto;
 }
+.az-global-nav-divider {
+  border-top: 1px solid var(--az-border);
+  margin: 8px 12px;
+}
 .az-global-nav-item {
   display: flex;
   flex-direction: column;
