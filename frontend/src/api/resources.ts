@@ -26,6 +26,7 @@ export interface CreateVmRequest {
   memory_mib: number
   disk_gib: number
   image: string
+  ip_pool?: string
 }
 
 function resourcesKey(project: string) {
@@ -36,6 +37,7 @@ export function useResources(project: string) {
   return useQuery({
     queryKey: resourcesKey(project),
     queryFn: () => apiFetch<ResourceRow[]>(`/projects/${encodeURIComponent(project)}/resources`),
+    enabled: project.length > 0,
   })
 }
 
@@ -46,7 +48,7 @@ export function useResource(project: string, name: string | null) {
       apiFetch<ResourceDetail>(
         `/projects/${encodeURIComponent(project)}/resources/${encodeURIComponent(name!)}`,
       ),
-    enabled: name !== null,
+    enabled: project.length > 0 && name !== null,
   })
 }
 

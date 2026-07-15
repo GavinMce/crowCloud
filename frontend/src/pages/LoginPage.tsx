@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { Button, Card, Container, Input, Stack } from '@crow-dev/ui'
 import { useNavigate } from 'react-router-dom'
 import { login, register } from '../api/auth'
 import { ApiError } from '../api/client'
+import { Button } from '../ui/Button'
+import { TextField } from '../ui/TextField'
 
 export function LoginPage() {
   const navigate = useNavigate()
@@ -47,56 +48,64 @@ export function LoginPage() {
   }
 
   return (
-    <Container maxWidth="sm">
-      <Stack direction="column" gap={6} align="center" style={{ paddingTop: '4rem' }}>
-        <h1>crowCloud</h1>
-        <Card header={mode === 'login' ? 'Log in' : 'First-time setup'}>
-          <form onSubmit={mode === 'login' ? handleLogin : handleRegister}>
-            <Stack direction="column" gap={4}>
-              <Input
-                label="Username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
+    <div
+      className="az-stack-col az-gap-6"
+      style={{
+        alignItems: 'center',
+        paddingTop: '10vh',
+        minHeight: '100%',
+        background: 'var(--az-bg-canvas)',
+      }}
+    >
+      <h1>crowCloud</h1>
+      <div className="az-card" style={{ width: 360 }}>
+        <h2>{mode === 'login' ? 'Log in' : 'First-time setup'}</h2>
+        <form onSubmit={mode === 'login' ? handleLogin : handleRegister}>
+          <div className="az-stack-col az-gap-4">
+            <TextField
+              label="Username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+              autoFocus
+            />
+            {mode === 'register' && (
+              <TextField
+                label="Email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 required
-                autoFocus
               />
-              {mode === 'register' && (
-                <Input
-                  label="Email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-              )}
-              <Input
-                label="Password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-              {error && <p role="alert">{error}</p>}
-              {notice && <p>{notice}</p>}
-              <Button type="submit" variant="primary" disabled={submitting}>
-                {mode === 'login' ? 'Log in' : 'Create admin account'}
-              </Button>
-            </Stack>
-          </form>
-        </Card>
-        <button
-          type="button"
-          onClick={() => {
-            setError(null)
-            setNotice(null)
-            setMode(mode === 'login' ? 'register' : 'login')
-          }}
-        >
-          {mode === 'login'
-            ? 'First time setting up crowCloud? Create the admin account'
-            : 'Already have an account? Log in'}
-        </button>
-      </Stack>
-    </Container>
+            )}
+            <TextField
+              label="Password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+            {error && <p className="az-alert az-alert-danger">{error}</p>}
+            {notice && <p>{notice}</p>}
+            <Button type="submit" variant="primary" disabled={submitting}>
+              {mode === 'login' ? 'Log in' : 'Create admin account'}
+            </Button>
+          </div>
+        </form>
+      </div>
+      <button
+        type="button"
+        className="az-table-link"
+        onClick={() => {
+          setError(null)
+          setNotice(null)
+          setMode(mode === 'login' ? 'register' : 'login')
+        }}
+      >
+        {mode === 'login'
+          ? 'First time setting up crowCloud? Create the admin account'
+          : 'Already have an account? Log in'}
+      </button>
+    </div>
   )
 }

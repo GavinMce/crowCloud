@@ -1,14 +1,19 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { Button, Container, Input, Modal, Stack, Table, type TableColumn } from '@crow-dev/ui'
-import { Link } from 'react-router-dom'
-import { type ProjectRow, useCreateProject, useDeleteProject, useProjects } from '../api/projects'
-import { ApiError } from '../api/client'
+import { useCurrentProject } from '../../hooks/useCurrentProject'
+import { type ProjectRow, useCreateProject, useDeleteProject, useProjects } from '../../api/projects'
+import { ApiError } from '../../api/client'
+import { Button } from '../../ui/Button'
+import { CommandBar } from '../../ui/CommandBar'
+import { DataTable, type DataTableColumn } from '../../ui/DataTable'
+import { Modal } from '../../ui/Modal'
+import { TextField } from '../../ui/TextField'
 
 export function ProjectsPage() {
   const projects = useProjects()
   const createProject = useCreateProject()
   const deleteProject = useDeleteProject()
+  const { current, setCurrent } = useCurrentProject()
 
   const [createOpen, setCreateOpen] = useState(false)
   const [name, setName] = useState('')
@@ -30,14 +35,20 @@ export function ProjectsPage() {
   const handleDelete = async () => {
     if (!pendingDelete) return
     await deleteProject.mutateAsync(pendingDelete)
+    if (pendingDelete === current) setCurrent(null)
     setPendingDelete(null)
   }
 
-  const columns: TableColumn<ProjectRow>[] = [
+  const columns: DataTableColumn<ProjectRow>[] = [
     {
       key: 'name',
       header: 'Name',
-      render: (row) => <Link to={`/projects/${encodeURIComponent(row.name)}`}>{row.name}</Link>,
+      render: (row) => (
+        <button type="button" className="az-table-link" onClick={() => setCurrent(row.name)}>
+          {row.name}
+          {row.name === current ? ' (current)' : ''}
+        </button>
+      ),
     },
     {
       key: 'created_at',
@@ -56,60 +67,54 @@ export function ProjectsPage() {
   ]
 
   return (
-    <Container maxWidth="lg">
-      <Stack direction="column" gap={4}>
-        <Stack direction="row" justify="between" align="center">
-          <h1>Projects</h1>
+    <div className="az-page">
+      <div className="az-stack-col az-gap-4">
+        <h1>Projects</h1>
+        <p className="az-text-secondary">
+          Click a project to make it the current project — resources across every service hub are
+          scoped to whichever project is selected.
+        </p>
+        <CommandBar>
           <Button variant="primary" onClick={() => setCreateOpen(true)}>
-            New Project
+            + Create
           </Button>
-        </Stack>
+        </CommandBar>
 
         {projects.isLoading && <p>Loading…</p>}
-        {projects.isError && <p role="alert">Failed to load projects.</p>}
+        {projects.isError && <p className="az-alert az-alert-danger">Failed to load projects.</p>}
         {projects.data && projects.data.length === 0 && <p>No projects yet.</p>}
         {projects.data && projects.data.length > 0 && (
-          <Table columns={columns} data={projects.data} keyField="id" />
+          <DataTable columns={columns} data={projects.data} keyField="id" />
         )}
-      </Stack>
+      </div>
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New Project">
+      <Modal open={createOpen} title="Create a project" onClose={() => setCreateOpen(false)}>
         <form onSubmit={handleCreate}>
-          <Stack direction="column" gap={4}>
-            <Input
-              label="Name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              autoFocus
-            />
-            {error && <p role="alert">{error}</p>}
+          <div className="az-stack-col az-gap-4">
+            <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+            {error && <p className="az-alert az-alert-danger">{error}</p>}
             <Button type="submit" variant="primary" disabled={createProject.isPending}>
               Create
             </Button>
-          </Stack>
+          </div>
         </form>
       </Modal>
 
-      <Modal
-        open={pendingDelete !== null}
-        onClose={() => setPendingDelete(null)}
-        title="Delete project"
-      >
-        <Stack direction="column" gap={4}>
+      <Modal open={pendingDelete !== null} title="Delete project" onClose={() => setPendingDelete(null)}>
+        <div className="az-stack-col az-gap-4">
           <p>
             Delete project <strong>{pendingDelete}</strong>? This cannot be undone.
           </p>
-          <Stack direction="row" gap={2}>
+          <div className="az-stack-row az-gap-2">
             <Button variant="primary" onClick={handleDelete} disabled={deleteProject.isPending}>
               Delete
             </Button>
-            <Button variant="secondary" onClick={() => setPendingDelete(null)}>
+            <Button variant="default" onClick={() => setPendingDelete(null)}>
               Cancel
             </Button>
-          </Stack>
-        </Stack>
+          </div>
+        </div>
       </Modal>
-    </Container>
+    </div>
   )
 }

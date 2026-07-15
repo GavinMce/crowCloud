@@ -1,46 +1,57 @@
-import { Card, Container, Grid, GridItem, Stack, Stat } from '@crow-dev/ui'
-import { Link } from 'react-router-dom'
-import { useProjects } from '../api/projects'
+import { HUBS } from '../hubs/hubConfig'
+import { useCurrentProject } from '../hooks/useCurrentProject'
 import { useProviders } from '../api/providers'
+import { ManagementIcon } from '../ui/icons'
+import { ServiceTile } from '../ui/ServiceTile'
 
 export function HomePage() {
-  const projects = useProjects()
+  const { projectNames, current } = useCurrentProject()
   const providers = useProviders()
 
   return (
-    <Container maxWidth="lg">
-      <Stack direction="column" gap={8}>
-        <h1>Home</h1>
+    <div className="az-page">
+      <div className="az-stack-col az-gap-6">
+        <div>
+          <h1>crowCloud</h1>
+          <p className="az-text-secondary">
+            {current
+              ? `Current project: ${current}`
+              : 'Select or create a project from the top bar to get started.'}
+          </p>
+        </div>
 
-        <Grid cols={2} gap={4}>
-          <GridItem>
-            <Stat label="Projects" value={projects.data?.length ?? '—'} />
-          </GridItem>
-          <GridItem>
-            <Stat label="Cloud Hosts" value={providers.data?.length ?? '—'} />
-          </GridItem>
-        </Grid>
+        <div className="az-stack-row az-gap-6">
+          <div>
+            <div style={{ fontSize: 24, fontWeight: 600 }}>{projectNames.length}</div>
+            <div className="az-text-secondary">Projects</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 24, fontWeight: 600 }}>{providers.data?.length ?? '—'}</div>
+            <div className="az-text-secondary">Cloud hosts</div>
+          </div>
+        </div>
 
         <section>
-          <h2>Get started</h2>
-          <Grid cols={2} gap={4}>
-            <GridItem>
-              <Link to="/projects" style={{ textDecoration: 'none', color: 'inherit' }}>
-                <Card header="New Project">
-                  <p>Create a project to hold your resources.</p>
-                </Card>
-              </Link>
-            </GridItem>
-            <GridItem>
-              <Link to="/cloud-hosts" style={{ textDecoration: 'none', color: 'inherit' }}>
-                <Card header="Add Cloud Host">
-                  <p>Connect a Proxmox host to start provisioning.</p>
-                </Card>
-              </Link>
-            </GridItem>
-          </Grid>
+          <h2>Services</h2>
+          <div className="az-tile-grid">
+            {HUBS.map((hub) => (
+              <ServiceTile
+                key={hub.id}
+                icon={<hub.icon size={24} />}
+                title={hub.label}
+                description={hub.description}
+                to={`/${hub.id}`}
+              />
+            ))}
+            <ServiceTile
+              icon={<ManagementIcon size={24} />}
+              title="Management"
+              description="Projects and cloud hosts."
+              to="/management/projects"
+            />
+          </div>
         </section>
-      </Stack>
-    </Container>
+      </div>
+    </div>
   )
 }

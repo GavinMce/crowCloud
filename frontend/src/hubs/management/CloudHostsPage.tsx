@@ -1,14 +1,19 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { Button, Container, Input, Modal, Stack, Table, type TableColumn } from '@crow-dev/ui'
-import { useAuth } from '../auth/useAuth'
 import {
   type ProviderRow,
   useCreateProvider,
   useDeleteProvider,
   useProviders,
-} from '../api/providers'
-import { ApiError } from '../api/client'
+} from '../../api/providers'
+import { ApiError } from '../../api/client'
+import { Button } from '../../ui/Button'
+import { CommandBar } from '../../ui/CommandBar'
+import { DataTable, type DataTableColumn } from '../../ui/DataTable'
+import { Modal } from '../../ui/Modal'
+import { Select } from '../../ui/Select'
+import { TextField } from '../../ui/TextField'
+import { useAuth } from '../../auth/useAuth'
 
 const PROVIDER_TYPES = [
   { value: 'proxmox', label: 'Proxmox', enabled: true },
@@ -70,7 +75,7 @@ export function CloudHostsPage() {
     setPendingDelete(null)
   }
 
-  const columns: TableColumn<ProviderRow>[] = [
+  const columns: DataTableColumn<ProviderRow>[] = [
     { key: 'name', header: 'Name' },
     { key: 'provider_type', header: 'Type' },
     {
@@ -94,88 +99,89 @@ export function CloudHostsPage() {
   ]
 
   return (
-    <Container maxWidth="lg">
-      <Stack direction="column" gap={4}>
-        <Stack direction="row" justify="between" align="center">
-          <h1>Cloud Hosts</h1>
+    <div className="az-page">
+      <div className="az-stack-col az-gap-4">
+        <h1>Cloud hosts</h1>
+        <CommandBar>
           {isAdmin ? (
             <Button variant="primary" onClick={() => setCreateOpen(true)}>
-              Add Cloud Host
+              + Create
             </Button>
           ) : (
-            <p>Only admins can add cloud hosts.</p>
+            <p className="az-text-secondary">Only admins can add cloud hosts.</p>
           )}
-        </Stack>
+        </CommandBar>
 
         {providers.isLoading && <p>Loading…</p>}
-        {providers.isError && <p role="alert">Failed to load cloud hosts.</p>}
+        {providers.isError && <p className="az-alert az-alert-danger">Failed to load cloud hosts.</p>}
         {providers.data && providers.data.length === 0 && <p>No cloud hosts configured yet.</p>}
         {providers.data && providers.data.length > 0 && (
-          <Table columns={columns} data={providers.data} keyField="id" />
+          <DataTable columns={columns} data={providers.data} keyField="id" />
         )}
-      </Stack>
+      </div>
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Add Cloud Host">
+      <Modal open={createOpen} title="Add cloud host" onClose={() => setCreateOpen(false)}>
         <form onSubmit={handleCreate}>
-          <Stack direction="column" gap={4}>
-            <label>
-              Type
-              <select value={providerType} onChange={(e) => setProviderType(e.target.value)}>
-                {PROVIDER_TYPES.map((t) => (
-                  <option key={t.value} value={t.value} disabled={!t.enabled}>
-                    {t.label}
-                    {t.enabled ? '' : ' (coming soon)'}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Input
+          <div className="az-stack-col az-gap-4">
+            <Select
+              label="Type"
+              value={providerType}
+              onChange={(e) => setProviderType(e.target.value)}
+            >
+              {PROVIDER_TYPES.map((t) => (
+                <option key={t.value} value={t.value} disabled={!t.enabled}>
+                  {t.label}
+                  {t.enabled ? '' : ' (coming soon)'}
+                </option>
+              ))}
+            </Select>
+            <TextField
               label="Name"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               required
               autoFocus
             />
-            <Input
+            <TextField
               label="URL"
               placeholder="https://pve.example.com:8006"
               value={form.url}
               onChange={(e) => setForm({ ...form, url: e.target.value })}
               required
             />
-            <Input
+            <TextField
               label="Token ID"
               placeholder="root@pam!crow"
               value={form.tokenId}
               onChange={(e) => setForm({ ...form, tokenId: e.target.value })}
               required
             />
-            <Input
+            <TextField
               label="Token Secret"
               type="password"
               value={form.tokenSecret}
               onChange={(e) => setForm({ ...form, tokenSecret: e.target.value })}
               required
             />
-            <Input
+            <TextField
               label="Node"
               value={form.node}
               onChange={(e) => setForm({ ...form, node: e.target.value })}
               required
             />
-            <Input
+            <TextField
               label="Default Storage"
               value={form.defaultStorage}
               onChange={(e) => setForm({ ...form, defaultStorage: e.target.value })}
               required
             />
-            <Input
+            <TextField
               label="Default Bridge"
               value={form.defaultBridge}
               onChange={(e) => setForm({ ...form, defaultBridge: e.target.value })}
               required
             />
-            <label>
+            <label className="az-stack-row az-gap-2">
               <input
                 type="checkbox"
                 checked={form.tlsInsecure}
@@ -183,33 +189,33 @@ export function CloudHostsPage() {
               />
               Allow insecure TLS
             </label>
-            {error && <p role="alert">{error}</p>}
+            {error && <p className="az-alert az-alert-danger">{error}</p>}
             <Button type="submit" variant="primary" disabled={createProvider.isPending}>
               Add
             </Button>
-          </Stack>
+          </div>
         </form>
       </Modal>
 
       <Modal
         open={pendingDelete !== null}
-        onClose={() => setPendingDelete(null)}
         title="Delete cloud host"
+        onClose={() => setPendingDelete(null)}
       >
-        <Stack direction="column" gap={4}>
+        <div className="az-stack-col az-gap-4">
           <p>
             Delete cloud host <strong>{pendingDelete?.name}</strong>? This cannot be undone.
           </p>
-          <Stack direction="row" gap={2}>
+          <div className="az-stack-row az-gap-2">
             <Button variant="primary" onClick={handleDelete} disabled={deleteProvider.isPending}>
               Delete
             </Button>
-            <Button variant="secondary" onClick={() => setPendingDelete(null)}>
+            <Button variant="default" onClick={() => setPendingDelete(null)}>
               Cancel
             </Button>
-          </Stack>
-        </Stack>
+          </div>
+        </div>
       </Modal>
-    </Container>
+    </div>
   )
 }

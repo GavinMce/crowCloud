@@ -10,17 +10,35 @@ body,
 
 body {
   margin: 0;
-  font-family: var(--crow-font-family, system-ui, 'Segoe UI', Roboto, sans-serif);
-  color: var(--crow-color-text, #1a1a1a);
-  background: var(--crow-color-surface, #f8f8f8);
+  font-family: var(--az-font, 'Segoe UI', system-ui, Roboto, sans-serif);
+  font-size: var(--az-font-size, 13px);
+  color: var(--az-text, #201f1e);
+  background: var(--az-bg-canvas, #f3f2f1);
 }
 
 h1,
 h2,
 h3 {
-  margin: 0 0 var(--crow-spacing-4, 1rem);
+  margin: 0 0 12px;
+  font-weight: 600;
+}
+
+h1 {
+  font-size: 20px;
+}
+
+h2 {
+  font-size: 16px;
 }
 
 p {
   margin: 0;
+}
+
+a {
+  color: var(--az-accent, #0078d4);
+}
+
+button {
+  font-family: inherit;
 }
