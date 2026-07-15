@@ -88,14 +88,3 @@ pub fn require_project(flag: Option<String>) -> Result<String> {
         anyhow::anyhow!("No project set. Use --project or `crow context set --project <name>`")
     })
 }
-
-/// Require an rg from flag or config.
-pub fn require_rg(flag: Option<String>) -> Result<String> {
-    if let Some(r) = flag {
-        return Ok(r);
-    }
-    let cfg = Config::load()?;
-    cfg.current_rg.ok_or_else(|| {
-        anyhow::anyhow!("No resource group set. Use --rg or `crow context set --rg <name>`")
-    })
-}

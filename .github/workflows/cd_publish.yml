@@ -26,6 +26,8 @@ jobs:
             dockerfile: docker/Dockerfile.operator
           - bin: crow-vps-agent
             dockerfile: docker/Dockerfile.vps-agent
+          - bin: crow-frontend
+            dockerfile: docker/Dockerfile.frontend
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3

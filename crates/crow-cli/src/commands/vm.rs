@@ -2,16 +2,13 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 
-use crate::client::{require_project, require_rg, CrowClient};
+use crate::client::{require_project, CrowClient};
 
 #[derive(Args)]
 pub struct VmCmd {
     /// Project (defaults to context)
     #[arg(long, global = true)]
     pub project: Option<String>,
-    /// Resource group (defaults to context)
-    #[arg(long, global = true)]
-    pub rg: Option<String>,
     #[command(subcommand)]
     pub command: VmSubcommand,
 }
@@ -46,6 +43,9 @@ pub struct CreateArgs {
     pub image: String,
     #[arg(long)]
     pub hostname: Option<String>,
+    /// Name of an IpPool to request a static address from (omit for DHCP)
+    #[arg(long = "ip-pool")]
+    pub ip_pool: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -59,6 +59,8 @@ struct CreateVmBody {
     image: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ip_pool: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -72,16 +74,15 @@ struct VmRow {
 
 pub async fn run(cmd: VmCmd) -> Result<()> {
     let project = require_project(cmd.project)?;
-    let rg = require_rg(cmd.rg)?;
     let client = CrowClient::from_config(None)?;
-    let base = format!("/api/v1/projects/{project}/resource-groups/{rg}/resources");
+    let base = format!("/api/v1/projects/{project}/resources");
 
     match cmd.command {
         VmSubcommand::List => {
             let vms: Vec<VmRow> = client.get(&base).await?;
             let vms: Vec<&VmRow> = vms.iter().filter(|r| r.resource_type == "vm").collect();
             if vms.is_empty() {
-                println!("No VMs in {project}/{rg}.");
+                println!("No VMs in {project}.");
             } else {
                 println!("{:<36}  {:<24}  {:<14}  CREATED", "ID", "NAME", "PHASE");
                 for v in vms {
@@ -110,6 +111,7 @@ pub async fn run(cmd: VmCmd) -> Result<()> {
                 disk_gib: args.disk_gib,
                 image: args.image,
                 hostname: args.hostname,
+                ip_pool: args.ip_pool,
             };
             let v: VmRow = client.post(&base, &body).await?;
             println!("Created VM '{}' ({}) — phase: {}", v.name, v.id, v.phase);

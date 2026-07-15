@@ -41,6 +41,22 @@ postgres:
   storageSize: 10Gi
   storageClass: ""
 
+frontend:
+  # Nginx serving the built static assets and reverse-proxying /api/ to the
+  # api Service, so the browser sees frontend+API as one origin regardless
+  # of whether Ingress is configured.
+  image: ghcr.io/gavinmce/crow-frontend
+  tag: latest
+  imagePullPolicy: IfNotPresent
+  replicas: 1
+  port: 80
+  service:
+    # NodePort requires no ingress controller — deploy/bootstrap.sh sets
+    # this explicitly so it can print a reachable URL immediately. Leave as
+    # ClusterIP if you're fronting this with your own Ingress instead.
+    type: ClusterIP
+    nodePort: 30080
+
 ingress:
   enabled: false
   host: ""

@@ -101,6 +101,14 @@ pub fn vm_cr_name(resource_id: Uuid) -> String {
     format!("vm-{resource_id}")
 }
 
+/// Deterministic Kubernetes object name for the `IpClaim` CR a resource
+/// creates when it has an `ip_pool_ref`. Derived from the same resource id
+/// as [`vm_cr_name`] so the two are trivially correlated without an extra
+/// lookup or DB column.
+pub fn ip_claim_cr_name(resource_id: Uuid) -> String {
+    format!("vm-{resource_id}-ip")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +117,15 @@ mod tests {
     fn vm_cr_name_is_prefixed_with_resource_id() {
         let id = Uuid::nil();
         assert_eq!(vm_cr_name(id), "vm-00000000-0000-0000-0000-000000000000");
+    }
+
+    #[test]
+    fn ip_claim_cr_name_is_derived_from_the_vm_cr_name() {
+        let id = Uuid::nil();
+        assert_eq!(
+            ip_claim_cr_name(id),
+            "vm-00000000-0000-0000-0000-000000000000-ip"
+        );
     }
 
     #[test]

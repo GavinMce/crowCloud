@@ -1,122 +1,108 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { Navigate, Route, Routes } from 'react-router-dom'
+import { RequireAuth } from './auth/RequireAuth'
+import { AppShell } from './layout/AppShell'
+import { HubLayout } from './layout/HubLayout'
+import { LoginPage } from './pages/LoginPage'
+import { HomePage } from './pages/HomePage'
+import { HubOverviewPage } from './hubs/HubOverviewPage'
+import { AllResourcesPage } from './hubs/AllResourcesPage'
+import { PlaceholderResourceTypePage } from './hubs/PlaceholderResourceTypePage'
+import { VirtualMachinesPage } from './hubs/compute/VirtualMachinesPage'
+import { CreateVirtualMachinePage } from './hubs/compute/CreateVirtualMachinePage'
+import { VirtualMachineDetailPage } from './hubs/compute/VirtualMachineDetailPage'
+import { ProjectsPage } from './hubs/management/ProjectsPage'
+import { InfrastructureOverviewPage } from './hubs/infrastructure/InfrastructureOverviewPage'
+import { AllHostsPage } from './hubs/infrastructure/AllHostsPage'
+import { ProxmoxHostsPage } from './hubs/infrastructure/ProxmoxHostsPage'
 
-function App() {
-  const [count, setCount] = useState(0)
-
+export function App() {
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route element={<RequireAuth />}>
+        <Route element={<AppShell />}>
+          <Route path="/" element={<HomePage />} />
 
-      <div className="ticks"></div>
+          <Route path="/compute" element={<HubLayout hubId="compute" />}>
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<HubOverviewPage hubId="compute" />} />
+            <Route path="all-resources" element={<AllResourcesPage hubId="compute" />} />
+            <Route path="virtual-machines" element={<VirtualMachinesPage />} />
+            <Route path="virtual-machines/create" element={<CreateVirtualMachinePage />} />
+            <Route path="virtual-machines/:name" element={<VirtualMachineDetailPage />} />
+            <Route
+              path="images"
+              element={<PlaceholderResourceTypePage hubId="compute" typeId="images" />}
+            />
+            <Route
+              path="disks"
+              element={<PlaceholderResourceTypePage hubId="compute" typeId="disks" />}
+            />
+          </Route>
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+          <Route path="/containers" element={<HubLayout hubId="containers" />}>
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<HubOverviewPage hubId="containers" />} />
+            <Route path="all-resources" element={<AllResourcesPage hubId="containers" />} />
+            <Route
+              path="kubernetes-clusters"
+              element={<PlaceholderResourceTypePage hubId="containers" typeId="kubernetes-clusters" />}
+            />
+          </Route>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+          <Route path="/storage" element={<HubLayout hubId="storage" />}>
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<HubOverviewPage hubId="storage" />} />
+            <Route path="all-resources" element={<AllResourcesPage hubId="storage" />} />
+            <Route
+              path="object-storage"
+              element={<PlaceholderResourceTypePage hubId="storage" typeId="object-storage" />}
+            />
+          </Route>
+
+          <Route path="/databases" element={<HubLayout hubId="databases" />}>
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<HubOverviewPage hubId="databases" />} />
+            <Route path="all-resources" element={<AllResourcesPage hubId="databases" />} />
+            <Route
+              path="instances"
+              element={<PlaceholderResourceTypePage hubId="databases" typeId="instances" />}
+            />
+          </Route>
+
+          <Route path="/networking" element={<HubLayout hubId="networking" />}>
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<HubOverviewPage hubId="networking" />} />
+            <Route path="all-resources" element={<AllResourcesPage hubId="networking" />} />
+            <Route
+              path="ip-pools"
+              element={<PlaceholderResourceTypePage hubId="networking" typeId="ip-pools" />}
+            />
+            <Route
+              path="exposed-endpoints"
+              element={<PlaceholderResourceTypePage hubId="networking" typeId="exposed-endpoints" />}
+            />
+            <Route
+              path="custom-domains"
+              element={<PlaceholderResourceTypePage hubId="networking" typeId="custom-domains" />}
+            />
+          </Route>
+
+          <Route path="/infrastructure" element={<HubLayout hubId="infrastructure" />}>
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<InfrastructureOverviewPage />} />
+            <Route path="all-resources" element={<AllHostsPage />} />
+            <Route path="proxmox-hosts" element={<ProxmoxHostsPage />} />
+            <Route
+              path="router-hosts"
+              element={<PlaceholderResourceTypePage hubId="infrastructure" typeId="router-hosts" />}
+            />
+          </Route>
+
+          <Route path="/management/projects" element={<ProjectsPage />} />
+        </Route>
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   )
 }
-
-export default App

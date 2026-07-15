@@ -24,12 +24,10 @@ pub struct Cli {
 pub enum Commands {
     /// Authenticate with a crowCloud server
     Login(commands::auth::LoginArgs),
-    /// Manage CLI context (project, resource group)
+    /// Manage CLI context (project)
     Context(commands::context::ContextCmd),
     /// Manage projects
     Project(commands::project::ProjectCmd),
-    /// Manage resource groups
-    Rg(commands::rg::RgCmd),
     /// Manage virtual machines
     Vm(commands::vm::VmCmd),
     /// Manage Kubernetes clusters

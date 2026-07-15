@@ -11,7 +11,7 @@ pub struct ContextCmd {
 
 #[derive(Subcommand)]
 pub enum ContextSubcommand {
-    /// Set current project and/or resource group
+    /// Set current project
     Set(SetArgs),
     /// Show current context
     Show,
@@ -21,8 +21,6 @@ pub enum ContextSubcommand {
 pub struct SetArgs {
     #[arg(long)]
     pub project: Option<String>,
-    #[arg(long)]
-    pub rg: Option<String>,
 }
 
 pub async fn run(cmd: ContextCmd) -> Result<()> {
@@ -32,14 +30,10 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
             if let Some(p) = args.project {
                 cfg.current_project = Some(p);
             }
-            if let Some(r) = args.rg {
-                cfg.current_rg = Some(r);
-            }
             cfg.save()?;
             println!(
-                "Context updated — project: {}, rg: {}",
+                "Context updated — project: {}",
                 cfg.current_project.as_deref().unwrap_or("(none)"),
-                cfg.current_rg.as_deref().unwrap_or("(none)"),
             );
         }
         ContextSubcommand::Show => {
@@ -49,7 +43,6 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
                 "project: {}",
                 cfg.current_project.as_deref().unwrap_or("(none)")
             );
-            println!("rg:      {}", cfg.current_rg.as_deref().unwrap_or("(none)"));
         }
     }
     Ok(())

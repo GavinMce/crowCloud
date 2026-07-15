@@ -6,19 +6,27 @@ provisioning in namespace {{ .Release.Namespace }}. Check status with:
   kubectl get cluster {{ include "crowcloud.fullname" . }}-postgres -n {{ .Release.Namespace }}
 {{- end }}
 
-Check that both deployments are ready:
+Check that all deployments are ready:
   kubectl get deploy -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
 
 {{- if .Values.ingress.enabled }}
 
-The API is reachable at:
+crowCloud is reachable at:
   http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else if eq .Values.frontend.service.type "NodePort" }}
+
+crowCloud is reachable on any cluster node at:
+  http://<node-ip>:{{ .Values.frontend.service.nodePort }}
 {{- else }}
 
-No Ingress is configured (ingress.enabled=false). Reach the API with:
-  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "crowcloud.fullname" . }}-api {{ .Values.api.port }}:{{ .Values.api.port }}
+No Ingress is configured (ingress.enabled=false). Reach the UI with:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "crowcloud.fullname" . }}-frontend 8081:{{ .Values.frontend.port }}
+  then open http://localhost:8081
 {{- end }}
 
-Once reachable, install the CLI and log in:
+First time here? Open crowCloud in your browser, create the admin account,
+then add a Cloud Host (e.g. Proxmox) before creating your first project.
+
+Prefer the CLI? Install it and log in:
   cargo install --path crates/crow-cli
   crow login --server http://<api-address>:{{ .Values.api.port }}

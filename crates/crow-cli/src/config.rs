@@ -9,7 +9,6 @@ pub struct Config {
     pub server: Option<String>,
     pub token: Option<String>,
     pub current_project: Option<String>,
-    pub current_rg: Option<String>,
 }
 
 impl Config {

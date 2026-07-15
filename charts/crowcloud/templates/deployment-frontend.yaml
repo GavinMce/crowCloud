@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "crowcloud.fullname" . }}-frontend
+  labels:
+    {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "frontend") .) | nindent 4 }}
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "frontend") .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "crowcloud.componentSelectorLabels" (merge (dict "component" "frontend") .) | nindent 8 }}
+    spec:
+      containers:
+        - name: crow-frontend
+          image: "{{ .Values.frontend.image }}:{{ .Values.frontend.tag }}"
+          imagePullPolicy: {{ .Values.frontend.imagePullPolicy | default "IfNotPresent" }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.frontend.port }}
+          env:
+            - name: API_UPSTREAM
+              value: "{{ include "crowcloud.fullname" . }}-api:{{ .Values.api.port }}"
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
