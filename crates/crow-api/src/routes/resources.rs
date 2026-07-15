@@ -71,6 +71,10 @@ struct CreateVmRequest {
     #[serde(default = "default_disk_gib")]
     disk_gib: u64,
     image: String,
+    /// `IpPool` name to request a static address from. Like
+    /// `infra_provider_ref`, this is a lookup key resolved by the operator's
+    /// `IpClaim` reconciler, not a Kubernetes object reference.
+    ip_pool: Option<String>,
 }
 
 fn default_memory_mib() -> u64 {
@@ -164,7 +168,10 @@ async fn create_vm(
                 name: provider_name,
                 namespace: None,
             },
-            ip_pool_ref: None,
+            ip_pool_ref: req.ip_pool.as_ref().map(|name| ResourceRef {
+                name: name.clone(),
+                namespace: None,
+            }),
             cpu: req.cpu,
             memory_gib: (req.memory_mib / 1024) as u32,
             disk_gib: req.disk_gib as u32,

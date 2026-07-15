@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use async_trait::async_trait;
 use crow_core::{
     traits::{ProvisionCtx, ResourceDriver},
@@ -10,6 +12,10 @@ use serde_json::Value;
 pub struct VirtualMachineDriver;
 
 /// Shape `ProvisionCtx.config` is expected to hold for a VirtualMachine resource.
+/// `ip`/`prefix_len`/`gateway`/`dns` are populated by the operator's VM
+/// controller once an `IpClaim` (from `spec.ip_pool_ref`) has bound — absent
+/// when the VM has no IP pool, in which case the VM boots with DHCP exactly
+/// as before this field existed.
 #[derive(Debug, Deserialize)]
 struct VmProvisionConfig {
     cpu: u32,
@@ -18,6 +24,33 @@ struct VmProvisionConfig {
     image: String,
     hostname: Option<String>,
     user_data: Option<String>,
+    ip: Option<IpAddr>,
+    prefix_len: Option<u8>,
+    gateway: Option<IpAddr>,
+    #[serde(default)]
+    dns: Vec<String>,
+}
+
+/// Renders a cloud-init network-config v2 (netplan) document for a static
+/// address. Matches on `en*` rather than a literal interface name (e.g.
+/// `eth0`) since Debian/Ubuntu cloud images — the template convention this
+/// project documents — use systemd predictable network interface names.
+fn render_network_config(ip: IpAddr, prefix_len: u8, gateway: IpAddr, dns: &[String]) -> String {
+    let gateway_key = if gateway.is_ipv6() {
+        "gateway6"
+    } else {
+        "gateway4"
+    };
+    let mut doc = format!(
+        "network:\n  version: 2\n  ethernets:\n    id0:\n      match:\n        name: \"en*\"\n      dhcp4: false\n      addresses:\n        - {ip}/{prefix_len}\n      {gateway_key}: {gateway}\n"
+    );
+    if !dns.is_empty() {
+        doc.push_str("      nameservers:\n        addresses:\n");
+        for addr in dns {
+            doc.push_str(&format!("          - {addr}\n"));
+        }
+    }
+    doc
 }
 
 fn deserialize_vm_handle(handle: &ResourceHandle) -> Result<VmHandle, DriverError> {
@@ -50,11 +83,25 @@ impl ResourceDriver for VirtualMachineDriver {
         let cfg: VmProvisionConfig = serde_json::from_value(ctx.config.clone())
             .map_err(|e| DriverError::InvalidConfig(format!("invalid VM config: {e}")))?;
 
-        let cloud_init = cfg.hostname.as_ref().map(|hostname| CloudInitConfig {
-            hostname: hostname.clone(),
-            user_data: cfg.user_data.clone(),
-            network_config: None,
-        });
+        let network_config = match (cfg.ip, cfg.prefix_len, cfg.gateway) {
+            (Some(ip), Some(prefix_len), Some(gateway)) => {
+                Some(render_network_config(ip, prefix_len, gateway, &cfg.dns))
+            }
+            _ => None,
+        };
+
+        let cloud_init = if cfg.hostname.is_some() || network_config.is_some() {
+            Some(CloudInitConfig {
+                hostname: cfg
+                    .hostname
+                    .clone()
+                    .unwrap_or_else(|| ctx.resource_name.clone()),
+                user_data: cfg.user_data.clone(),
+                network_config,
+            })
+        } else {
+            None
+        };
 
         let spec = VmSpec {
             name: ctx.resource_name.clone(),
@@ -62,7 +109,7 @@ impl ResourceDriver for VirtualMachineDriver {
             memory_mib: cfg.memory_mib,
             disk_gib: cfg.disk_gib,
             image: cfg.image,
-            ip: None,
+            ip: cfg.ip,
             cloud_init,
             network_ref: None,
         };
@@ -134,9 +181,45 @@ mod tests {
     };
     use std::{net::IpAddr, sync::Arc};
 
+    #[test]
+    fn network_config_renders_a_static_ipv4_address() {
+        let doc = render_network_config(
+            "10.20.0.10".parse().unwrap(),
+            24,
+            "10.20.0.1".parse().unwrap(),
+            &["1.1.1.1".to_string(), "1.0.0.1".to_string()],
+        );
+        assert!(doc.contains("addresses:\n        - 10.20.0.10/24"));
+        assert!(doc.contains("gateway4: 10.20.0.1"));
+        assert!(doc.contains("- 1.1.1.1"));
+        assert!(doc.contains("- 1.0.0.1"));
+    }
+
+    #[test]
+    fn network_config_omits_nameservers_block_when_dns_is_empty() {
+        let doc = render_network_config(
+            "10.20.0.10".parse().unwrap(),
+            24,
+            "10.20.0.1".parse().unwrap(),
+            &[],
+        );
+        assert!(!doc.contains("nameservers"));
+    }
+
     struct MockInfraProvider {
         vm_handle: VmHandle,
         vm_status: VmStatus,
+        last_spec: std::sync::Mutex<Option<VmSpec>>,
+    }
+
+    impl MockInfraProvider {
+        fn new(vm_handle: VmHandle, vm_status: VmStatus) -> Self {
+            Self {
+                vm_handle,
+                vm_status,
+                last_spec: std::sync::Mutex::new(None),
+            }
+        }
     }
 
     #[async_trait]
@@ -147,7 +230,8 @@ mod tests {
         fn name(&self) -> &str {
             "mock"
         }
-        async fn create_vm(&self, _spec: VmSpec) -> Result<VmHandle, ProviderError> {
+        async fn create_vm(&self, spec: VmSpec) -> Result<VmHandle, ProviderError> {
+            *self.last_spec.lock().unwrap() = Some(spec);
             Ok(self.vm_handle.clone())
         }
         async fn delete_vm(&self, _handle: &VmHandle) -> Result<(), ProviderError> {
@@ -195,10 +279,7 @@ mod tests {
             ip: Some("10.0.0.5".parse::<IpAddr>().unwrap()),
             name: "my-vm".into(),
         };
-        let infra = Arc::new(MockInfraProvider {
-            vm_handle: vm_handle.clone(),
-            vm_status: VmStatus::Running,
-        });
+        let infra = Arc::new(MockInfraProvider::new(vm_handle.clone(), VmStatus::Running));
         let ctx = ctx_with(
             infra,
             serde_json::json!({ "cpu": 2, "memory_mib": 2048, "disk_gib": 20, "image": "9000" }),
@@ -209,6 +290,37 @@ mod tests {
         let decoded: VmHandle = serde_json::from_value(handle.data).unwrap();
         assert_eq!(decoded.provider_id, "123");
         assert_eq!(decoded.ip, vm_handle.ip);
+    }
+
+    #[tokio::test]
+    async fn provision_threads_bound_ip_into_spec_and_network_config() {
+        let vm_handle = VmHandle {
+            provider_type: "mock".into(),
+            provider_id: "123".into(),
+            ip: Some("10.20.0.10".parse().unwrap()),
+            name: "my-vm".into(),
+        };
+        let infra = Arc::new(MockInfraProvider::new(vm_handle.clone(), VmStatus::Running));
+        let ctx = ctx_with(
+            infra.clone(),
+            serde_json::json!({
+                "cpu": 2, "memory_mib": 2048, "disk_gib": 20, "image": "9000",
+                "ip": "10.20.0.10", "prefix_len": 24, "gateway": "10.20.0.1",
+                "dns": ["1.1.1.1"]
+            }),
+        );
+
+        VirtualMachineDriver.provision(&ctx).await.unwrap();
+
+        let last_spec = infra.last_spec.lock().unwrap().clone().unwrap();
+        assert_eq!(last_spec.ip, Some("10.20.0.10".parse().unwrap()));
+        let network_config = last_spec
+            .cloud_init
+            .expect("cloud_init should be set once an IP is bound")
+            .network_config
+            .expect("network_config should be set once an IP is bound");
+        assert!(network_config.contains("10.20.0.10/24"));
+        assert!(network_config.contains("gateway4: 10.20.0.1"));
     }
 
     #[tokio::test]
@@ -235,10 +347,7 @@ mod tests {
                 ResourcePhase::Failed("boom".into()),
             ),
         ] {
-            let infra = Arc::new(MockInfraProvider {
-                vm_handle: vm_handle.clone(),
-                vm_status: status,
-            });
+            let infra = Arc::new(MockInfraProvider::new(vm_handle.clone(), status));
             let ctx = ctx_with(infra, Value::Null);
             let phase = VirtualMachineDriver
                 .reconcile(&ctx, &resource_handle)
@@ -260,10 +369,7 @@ mod tests {
             resource_type: "VirtualMachine".into(),
             data: serde_json::to_value(&vm_handle).unwrap(),
         };
-        let infra = Arc::new(MockInfraProvider {
-            vm_handle: vm_handle.clone(),
-            vm_status: VmStatus::Running,
-        });
+        let infra = Arc::new(MockInfraProvider::new(vm_handle.clone(), VmStatus::Running));
         let ctx = ctx_with(infra, Value::Null);
 
         let endpoints = VirtualMachineDriver

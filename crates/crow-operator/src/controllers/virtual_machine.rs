@@ -1,8 +1,8 @@
-use std::{sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use chrono::Utc;
 use futures::StreamExt;
-use kube::api::{Api, Patch, PatchParams};
+use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams, PostParams};
 use kube::ResourceExt;
 use kube::{
     runtime::{
@@ -14,11 +14,17 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crow_core::{
-    crd::resources::{Condition, VirtualMachine, VirtualMachineStatus},
+    crd::{
+        common::ResourceRef,
+        networking::{IpClaim, IpClaimSpec, IpPool},
+        resources::{Condition, VirtualMachine, VirtualMachineStatus},
+    },
     traits::{ProvisionCtx, ResourceDriver},
     types::ResourcePhase,
 };
-use crow_provider_registry::{resolve_provider_by_id, resolve_provider_by_name, VM_NAMESPACE};
+use crow_provider_registry::{
+    ip_claim_cr_name, resolve_provider_by_id, resolve_provider_by_name, VM_NAMESPACE,
+};
 use crow_resource_vm::VirtualMachineDriver;
 
 const FINALIZER: &str = "vm.crow.cloud/finalizer";
@@ -29,6 +35,10 @@ enum ReconcileError {
     RowMissing(Uuid),
     #[error("CR name {0:?} is not a valid `vm-{{uuid}}` name")]
     BadCrName(String),
+    #[error("ip pool {0:?} referenced by ip_pool_ref not found")]
+    PoolMissing(String),
+    #[error("malformed IPv4 address or CIDR {0:?} from IpClaim/IpPool")]
+    BadAddress(String),
     #[error(transparent)]
     Driver(#[from] crow_core::DriverError),
     #[error(transparent)]
@@ -111,6 +121,87 @@ struct ResourceRow {
     handle: Option<serde_json::Value>,
 }
 
+struct AllocatedNetwork {
+    ip: IpAddr,
+    prefix_len: u8,
+    gateway: IpAddr,
+    dns: Vec<String>,
+}
+
+/// Ensures an `IpClaim` exists for this VM and reports its allocation, if
+/// bound. Returns `Ok(None)` when the claim exists but the `ip_claim`
+/// controller hasn't allocated an address yet — the caller should wait
+/// rather than provision, so cloud-init gets the real address on first boot.
+async fn ensure_ip_claim_bound(
+    ctx: &Ctx,
+    resource_id: Uuid,
+    vm_name: &str,
+    pool_ref: &ResourceRef,
+) -> Result<Option<AllocatedNetwork>, ReconcileError> {
+    let claim_name = ip_claim_cr_name(resource_id);
+    let claim_api: Api<IpClaim> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+
+    if claim_api.get_opt(&claim_name).await?.is_none() {
+        let claim = IpClaim {
+            metadata: ObjectMeta {
+                name: Some(claim_name.clone()),
+                namespace: Some(VM_NAMESPACE.to_string()),
+                ..Default::default()
+            },
+            spec: IpClaimSpec {
+                pool_ref: pool_ref.clone(),
+                resource_kind: "VirtualMachine".to_string(),
+                resource_name: vm_name.to_string(),
+            },
+            status: None,
+        };
+        match claim_api.create(&PostParams::default(), &claim).await {
+            Ok(_) => {}
+            Err(kube::Error::Api(e)) if e.code == 409 => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    let claim = claim_api.get(&claim_name).await?;
+    let Some(allocated_ip) = claim
+        .status
+        .as_ref()
+        .filter(|s| s.phase.as_deref() == Some("Bound"))
+        .and_then(|s| s.allocated_ip.as_deref())
+    else {
+        return Ok(None);
+    };
+
+    let pool_api: Api<IpPool> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+    let pool = pool_api
+        .get_opt(&pool_ref.name)
+        .await?
+        .ok_or_else(|| ReconcileError::PoolMissing(pool_ref.name.clone()))?;
+
+    let ip: IpAddr = allocated_ip
+        .parse()
+        .map_err(|_| ReconcileError::BadAddress(allocated_ip.to_string()))?;
+    let gateway: IpAddr = pool
+        .spec
+        .gateway
+        .parse()
+        .map_err(|_| ReconcileError::BadAddress(pool.spec.gateway.clone()))?;
+    let prefix_len: u8 = pool
+        .spec
+        .cidr
+        .rsplit('/')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| ReconcileError::BadAddress(pool.spec.cidr.clone()))?;
+
+    Ok(Some(AllocatedNetwork {
+        ip,
+        prefix_len,
+        gateway,
+        dns: pool.spec.dns.clone(),
+    }))
+}
+
 async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError> {
     let name = vm.name_any();
     let resource_id = resource_id_from_cr_name(&name)?;
@@ -125,16 +216,36 @@ async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError>
             .await?;
     let row = row.ok_or(ReconcileError::RowMissing(resource_id))?;
 
+    let network = match &vm.spec.ip_pool_ref {
+        Some(pool_ref) => {
+            match ensure_ip_claim_bound(ctx, resource_id, &name, pool_ref).await? {
+                Some(net) => Some(net),
+                // Claim exists but isn't bound yet — wait rather than
+                // provision, so cloud-init gets the real address on first boot.
+                None => return Ok(Action::requeue(Duration::from_secs(5))),
+            }
+        }
+        None => None,
+    };
+
+    let mut config = serde_json::json!({
+        "cpu": vm.spec.cpu,
+        "memory_mib": (vm.spec.memory_gib as u64) * 1024,
+        "disk_gib": vm.spec.disk_gib,
+        "image": vm.spec.image,
+    });
+    if let Some(net) = &network {
+        config["ip"] = serde_json::json!(net.ip);
+        config["prefix_len"] = serde_json::json!(net.prefix_len);
+        config["gateway"] = serde_json::json!(net.gateway);
+        config["dns"] = serde_json::json!(net.dns);
+    }
+
     let provision_ctx = ProvisionCtx {
         infra,
         network: None,
         dns: None,
-        config: serde_json::json!({
-            "cpu": vm.spec.cpu,
-            "memory_mib": (vm.spec.memory_gib as u64) * 1024,
-            "disk_gib": vm.spec.disk_gib,
-            "image": vm.spec.image,
-        }),
+        config,
         project: row.project,
         resource_name: name.clone(),
     };
@@ -193,6 +304,18 @@ async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError>
 async fn cleanup(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError> {
     let name = vm.name_any();
     let resource_id = resource_id_from_cr_name(&name)?;
+
+    if vm.spec.ip_pool_ref.is_some() {
+        let claim_api: Api<IpClaim> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+        match claim_api
+            .delete(&ip_claim_cr_name(resource_id), &DeleteParams::default())
+            .await
+        {
+            Ok(_) => {}
+            Err(kube::Error::Api(e)) if e.code == 404 => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
 
     #[derive(sqlx::FromRow)]
     struct CleanupRow {

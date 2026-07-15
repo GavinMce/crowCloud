@@ -43,6 +43,9 @@ pub struct CreateArgs {
     pub image: String,
     #[arg(long)]
     pub hostname: Option<String>,
+    /// Name of an IpPool to request a static address from (omit for DHCP)
+    #[arg(long = "ip-pool")]
+    pub ip_pool: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -56,6 +59,8 @@ struct CreateVmBody {
     image: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ip_pool: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -106,6 +111,7 @@ pub async fn run(cmd: VmCmd) -> Result<()> {
                 disk_gib: args.disk_gib,
                 image: args.image,
                 hostname: args.hostname,
+                ip_pool: args.ip_pool,
             };
             let v: VmRow = client.post(&base, &body).await?;
             println!("Created VM '{}' ({}) — phase: {}", v.name, v.id, v.phase);
