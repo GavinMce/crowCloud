@@ -1,13 +1,25 @@
+import { Link } from 'react-router-dom'
 import { useProviders } from '../../api/providers'
 import type { ProviderRow } from '../../api/providers'
 import { DataTable, type DataTableColumn } from '../../ui/DataTable'
+
+function hostDetailPath(row: ProviderRow): string | null {
+  return row.provider_type === 'proxmox' ? `/infrastructure/proxmox-hosts/${row.id}` : null
+}
 
 export function AllHostsPage() {
   const providers = useProviders()
   const hosts = providers.data ?? []
 
   const columns: DataTableColumn<ProviderRow>[] = [
-    { key: 'name', header: 'Name' },
+    {
+      key: 'name',
+      header: 'Name',
+      render: (row) => {
+        const path = hostDetailPath(row)
+        return path ? <Link to={path}>{row.name}</Link> : row.name
+      },
+    },
     { key: 'provider_type', header: 'Type' },
     {
       key: 'created_at',

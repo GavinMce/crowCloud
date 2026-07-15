@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useCurrentProject } from '../../hooks/useCurrentProject'
 import { useDeleteResource, useResource } from '../../api/resources'
-import { Breadcrumb } from '../../ui/Breadcrumb'
 import { Button } from '../../ui/Button'
 import { CommandBar } from '../../ui/CommandBar'
 import { EssentialsGrid, type EssentialItem } from '../../ui/EssentialsGrid'
@@ -17,12 +16,13 @@ function vmIp(handle: unknown): string | null {
   return null
 }
 
-export function VirtualMachineDetailPage() {
+export function VirtualMachineOverviewTab() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
   const { current } = useCurrentProject()
   const detail = useResource(current ?? '', name)
   const deleteResource = useDeleteResource(current ?? '')
+
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   const handleDelete = async () => {
@@ -30,34 +30,36 @@ export function VirtualMachineDetailPage() {
     navigate('/compute/virtual-machines')
   }
 
-  const items: EssentialItem[] = detail.data
-    ? [
-        { label: 'Status', value: <StatusPill phase={detail.data.phase} /> },
-        { label: 'Project', value: current },
-        { label: 'IP address', value: vmIp(detail.data.handle) ?? 'Not assigned yet' },
-        { label: 'Created', value: new Date(detail.data.created_at).toLocaleString() },
-      ]
-    : []
+  if (detail.isLoading) {
+    return <p>Loading…</p>
+  }
+
+  if (detail.isError || !detail.data) {
+    return <p className="az-alert az-alert-danger">Failed to load this virtual machine.</p>
+  }
+
+  const items: EssentialItem[] = [
+    { label: 'Status', value: <StatusPill phase={detail.data.phase} /> },
+    { label: 'Project', value: current },
+    { label: 'IP address', value: vmIp(detail.data.handle) ?? 'Not assigned yet' },
+    { label: 'Created', value: new Date(detail.data.created_at).toLocaleString() },
+  ]
 
   return (
-    <div className="az-page">
-      <div className="az-stack-col az-gap-4">
-        <Breadcrumb
-          items={[{ label: 'Virtual machines', to: '/compute/virtual-machines' }, { label: name }]}
-        />
-        <h1>{name}</h1>
-        <CommandBar>
-          <Button variant="default" onClick={() => setConfirmOpen(true)}>
-            Delete
-          </Button>
-        </CommandBar>
+    <div className="az-stack-col az-gap-4">
+      <h2>Overview</h2>
+      <CommandBar>
+        <Button variant="default" onClick={() => setConfirmOpen(true)}>
+          Delete
+        </Button>
+      </CommandBar>
+      <EssentialsGrid items={items} />
 
-        {detail.isLoading && <p>Loading…</p>}
-        {detail.isError && <p className="az-alert az-alert-danger">Failed to load this virtual machine.</p>}
-        {detail.data && <EssentialsGrid items={items} />}
-      </div>
-
-      <Modal open={confirmOpen} title="Delete virtual machine" onClose={() => setConfirmOpen(false)}>
+      <Modal
+        open={confirmOpen}
+        title="Delete virtual machine"
+        onClose={() => setConfirmOpen(false)}
+      >
         <div className="az-stack-col az-gap-4">
           <p>
             Delete virtual machine <strong>{name}</strong>? This cannot be undone.

@@ -384,10 +384,13 @@
   height: 100%;
   display: grid;
   grid-template-rows: 48px 1fr;
+  gap: 0;
 }
 
 /* Top bar */
 .az-topbar {
+  height: 48px;
+  box-sizing: border-box;
   background: var(--az-topbar-bg);
   color: var(--az-topbar-text);
   display: flex;
@@ -539,24 +542,9 @@
   font-weight: 600;
 }
 
-/* Hub secondary nav */
-.az-hub {
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  height: 100%;
-  overflow: hidden;
-}
-.az-hub-nav {
-  background: var(--az-nav-bg);
-  border-right: 1px solid var(--az-border);
-  overflow-y: auto;
-  padding: 12px 0;
-}
-.az-hub-nav-title {
-  padding: 4px 16px 12px;
-  font-weight: 600;
-  font-size: 14px;
-}
+/* Entity nav items — shared by every EntityLayout-based page (a service
+   hub and a specific resource are the same kind of page, see
+   src/layout/EntityLayout.tsx), whether it's a section divider or a link. */
 .az-hub-nav-section {
   padding: 8px 16px 4px;
   font-size: 11px;
@@ -581,8 +569,54 @@
   color: var(--az-accent);
   font-weight: 600;
 }
-.az-hub-content {
-  overflow-y: auto;
+
+/* Entity header — breadcrumb/type/name — shaded a touch darker than the
+   page canvas so it reads as chrome, distinct from scrolling content. */
+.az-entity-header {
+  padding: 20px 24px 16px;
+  background: var(--az-nav-selected-bg);
+  border-bottom: 1px solid var(--az-border);
+}
+
+/* Entity type eyebrow, shown above the name in EntityLayout's header. */
+.az-entity-type {
+  font-size: 12px;
+  color: var(--az-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+/* EntityLayout's root: a column at least as tall as <main>, so the nav+
+   content row below the header can grow to fill any leftover space down
+   to the bottom of the page instead of stopping wherever its own content
+   ends. No gap here — the header and the nav/content row below it should
+   sit flush, like Azure's command bar sitting directly above tab content. */
+.az-entity-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* Entity side nav — sits below the page header (breadcrumb/type/name) and
+   grows (flex: 1) to fill the rest of .az-entity-page's height, so its
+   background always reaches the bottom of the page, not just however far
+   its own nav items or its sibling content go. */
+.az-entity-layout {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+}
+.az-entity-nav {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--az-nav-bg);
+  border-right: 1px solid var(--az-border);
+  padding: 12px 0;
+}
+.az-entity-content {
+  flex: 1;
+  min-width: 0;
+  padding: 20px 24px;
 }
 
 /* Placeholder state */
