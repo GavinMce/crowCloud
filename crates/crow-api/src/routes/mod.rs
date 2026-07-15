@@ -5,6 +5,7 @@ mod auth;
 mod domains;
 mod expose;
 mod projects;
+mod provider_nodes;
 mod providers;
 mod resources;
 

@@ -503,6 +503,7 @@ dependencies = [
  "crow-auth",
  "crow-core",
  "crow-db",
+ "crow-provider-proxmox",
  "crow-provider-registry",
  "k8s-openapi",
  "kube",

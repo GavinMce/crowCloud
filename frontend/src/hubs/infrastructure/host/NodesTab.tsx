@@ -1,27 +1,14 @@
 import { Link, useOutletContext } from 'react-router-dom'
 import type { ProviderDetail } from '../../../api/providers'
+import { useProviderNodes, type ProviderNode } from '../../../api/providerNodes'
 import { DataTable, type DataTableColumn } from '../../../ui/DataTable'
-
-type NodeRow = {
-  name: string
-  defaultStorage: string
-  defaultBridge: string
-}
+import { formatCpu, formatMemory, nodeStatusVariant } from './formatNodeStats'
 
 export function NodesTab() {
   const host = useOutletContext<ProviderDetail>()
+  const nodes = useProviderNodes(host.id)
 
-  // Only one node exists per host until discovery ships (issue #32) — still
-  // rendered as a list so the UI is already shaped for when there are more.
-  const nodes: NodeRow[] = [
-    {
-      name: host.config.node,
-      defaultStorage: host.config.default_storage,
-      defaultBridge: host.config.default_bridge,
-    },
-  ]
-
-  const columns: DataTableColumn<NodeRow>[] = [
+  const columns: DataTableColumn<ProviderNode>[] = [
     {
       key: 'name',
       header: 'Name',
@@ -31,22 +18,31 @@ export function NodesTab() {
         </Link>
       ),
     },
-    { key: 'defaultStorage', header: 'Default storage' },
-    { key: 'defaultBridge', header: 'Default bridge' },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (row) => (
+        <span className={`az-pill az-pill-${nodeStatusVariant(row.status)}`}>{row.status}</span>
+      ),
+    },
+    { key: 'cpu', header: 'CPU', render: (row) => formatCpu(row.cpu, row.max_cpu) },
+    { key: 'mem', header: 'Memory', render: (row) => formatMemory(row.mem, row.max_mem) },
+    {
+      key: 'configured',
+      header: 'Configured',
+      render: (row) => (row.configured ? 'Yes' : 'No'),
+    },
   ]
 
   return (
     <div className="az-stack-col az-gap-4">
       <h2>Nodes</h2>
-      <p className="az-text-secondary">
-        Node discovery isn&apos;t implemented yet — this is the single node entered when the host
-        was created. See{' '}
-        <a href="https://github.com/GavinMce/crowCloud/issues/32" target="_blank" rel="noreferrer">
-          issue #32
-        </a>{' '}
-        for auto-discovering every node in a cluster and configuring them individually.
-      </p>
-      <DataTable columns={columns} data={nodes} keyField="name" />
+      {nodes.isLoading && <p>Loading…</p>}
+      {nodes.isError && <p className="az-alert az-alert-danger">Failed to load nodes.</p>}
+      {nodes.data && nodes.data.length === 0 && <p>Proxmox reported no nodes for this host.</p>}
+      {nodes.data && nodes.data.length > 0 && (
+        <DataTable columns={columns} data={nodes.data} keyField="name" />
+      )}
     </div>
   )
 }

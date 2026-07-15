@@ -33,6 +33,10 @@ pub struct VirtualMachineSpec {
     /// reference — there is no `Provider` custom resource today, so `namespace`
     /// is unused. The operator resolves this by querying Postgres directly.
     pub infra_provider_ref: ResourceRef,
+    /// Which of the host's adopted Proxmox nodes to provision on — the
+    /// host's connection config alone no longer implies a node (a host can
+    /// have zero or several adopted nodes, see `provider_nodes`).
+    pub node: String,
     pub ip_pool_ref: Option<ResourceRef>,
     pub cpu: u32,
     pub memory_gib: u32,
