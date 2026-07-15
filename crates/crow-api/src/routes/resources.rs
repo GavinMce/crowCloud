@@ -6,7 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use crow_core::crd::{
-    resource_group::ResourceRef,
+    common::ResourceRef,
     resources::{VirtualMachine, VirtualMachineSpec},
 };
 use crow_provider_registry::{vm_cr_name, VM_NAMESPACE};
@@ -40,15 +40,14 @@ struct ResourceRow {
 async fn list(
     AuthUser(_): AuthUser,
     State(state): State<AppState>,
-    Path((project, rg)): Path<(String, String)>,
+    Path(project): Path<String>,
 ) -> ApiResult<Json<Vec<ResourceRow>>> {
     let rows = sqlx::query_as::<_, ResourceRow>(
         "SELECT id, name, resource_type, provider_id, phase, created_at
-         FROM resources WHERE project = $1 AND resource_group = $2
+         FROM resources WHERE project = $1
          ORDER BY name",
     )
     .bind(&project)
-    .bind(&rg)
     .fetch_all(&state.db)
     .await
     .map_err(|e| ApiError::Internal(e.into()))?;
@@ -94,13 +93,13 @@ struct ResourceResponse {
 async fn create(
     AuthUser(claims): AuthUser,
     State(state): State<AppState>,
-    Path((project, rg)): Path<(String, String)>,
+    Path(project): Path<String>,
     Json(req): Json<CreateResourceRequest>,
 ) -> ApiResult<(StatusCode, Json<ResourceResponse>)> {
     let user_id = Uuid::parse_str(&claims.sub).ok();
 
     match req {
-        CreateResourceRequest::Vm(vm) => create_vm(state, project, rg, user_id, vm).await,
+        CreateResourceRequest::Vm(vm) => create_vm(state, project, user_id, vm).await,
     }
 }
 
@@ -110,7 +109,6 @@ async fn create(
 async fn create_vm(
     state: AppState,
     project: String,
-    rg: String,
     user_id: Option<Uuid>,
     req: CreateVmRequest,
 ) -> ApiResult<(StatusCode, Json<ResourceResponse>)> {
@@ -137,12 +135,11 @@ async fn create_vm(
 
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO resources
-           (project, resource_group, name, resource_type, provider_id, spec, phase, created_by)
-         VALUES ($1, $2, $3, 'vm', $4, $5, 'Pending', $6)
+           (project, name, resource_type, provider_id, spec, phase, created_by)
+         VALUES ($1, $2, 'vm', $3, $4, 'Pending', $5)
          RETURNING id",
     )
     .bind(&project)
-    .bind(&rg)
     .bind(&req.name)
     .bind(req.provider_id)
     .bind(&spec_json)
@@ -150,9 +147,7 @@ async fn create_vm(
     .fetch_one(&state.db)
     .await
     .map_err(|e| match &e {
-        sqlx::Error::Database(db)
-            if db.constraint() == Some("resources_project_resource_group_name_key") =>
-        {
+        sqlx::Error::Database(db) if db.constraint() == Some("resources_project_name_key") => {
             ApiError::Conflict(format!("resource '{}' already exists", req.name))
         }
         _ => ApiError::Internal(e.into()),
@@ -217,14 +212,13 @@ struct ResourceDetailRow {
 async fn get_one(
     AuthUser(_): AuthUser,
     State(state): State<AppState>,
-    Path((project, rg, name)): Path<(String, String, String)>,
+    Path((project, name)): Path<(String, String)>,
 ) -> ApiResult<Json<ResourceResponse>> {
     let row = sqlx::query_as::<_, ResourceDetailRow>(
         "SELECT id, name, resource_type, phase, handle, created_at
-         FROM resources WHERE project = $1 AND resource_group = $2 AND name = $3",
+         FROM resources WHERE project = $1 AND name = $2",
     )
     .bind(&project)
-    .bind(&rg)
     .bind(&name)
     .fetch_optional(&state.db)
     .await
@@ -244,18 +238,15 @@ async fn get_one(
 async fn remove(
     AuthUser(_): AuthUser,
     State(state): State<AppState>,
-    Path((project, rg, name)): Path<(String, String, String)>,
+    Path((project, name)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    let id: Uuid = sqlx::query_scalar(
-        "SELECT id FROM resources WHERE project = $1 AND resource_group = $2 AND name = $3",
-    )
-    .bind(&project)
-    .bind(&rg)
-    .bind(&name)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| ApiError::Internal(e.into()))?
-    .ok_or(ApiError::NotFound)?;
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM resources WHERE project = $1 AND name = $2")
+        .bind(&project)
+        .bind(&name)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?
+        .ok_or(ApiError::NotFound)?;
 
     // Delete the CR; the operator's finalizer performs the provider cleanup and
     // the `DELETE FROM resources` (see crow-operator's virtual_machine::cleanup).

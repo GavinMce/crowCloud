@@ -2,7 +2,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::resource_group::ResourceRef;
+use super::common::ResourceRef;
 
 // --- IpPool / IpClaim ---
 

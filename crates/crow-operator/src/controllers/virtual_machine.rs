@@ -107,7 +107,6 @@ fn error_policy(
 #[derive(sqlx::FromRow)]
 struct ResourceRow {
     project: String,
-    resource_group: String,
     phase: String,
     handle: Option<serde_json::Value>,
 }
@@ -119,12 +118,11 @@ async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError>
     let (provider_id, infra) =
         resolve_provider_by_name(&ctx.db, &vm.spec.infra_provider_ref.name).await?;
 
-    let row: Option<ResourceRow> = sqlx::query_as(
-        "SELECT project, resource_group, phase, handle FROM resources WHERE id = $1",
-    )
-    .bind(resource_id)
-    .fetch_optional(&ctx.db)
-    .await?;
+    let row: Option<ResourceRow> =
+        sqlx::query_as("SELECT project, phase, handle FROM resources WHERE id = $1")
+            .bind(resource_id)
+            .fetch_optional(&ctx.db)
+            .await?;
     let row = row.ok_or(ReconcileError::RowMissing(resource_id))?;
 
     let provision_ctx = ProvisionCtx {
@@ -138,7 +136,6 @@ async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError>
             "image": vm.spec.image,
         }),
         project: row.project,
-        resource_group: row.resource_group,
         resource_name: name.clone(),
     };
 
@@ -222,7 +219,6 @@ async fn cleanup(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileErro
             dns: None,
             config: serde_json::Value::Null,
             project: String::new(),
-            resource_group: String::new(),
             resource_name: name.clone(),
         };
         ctx.driver.deprovision(&provision_ctx, &handle).await?;

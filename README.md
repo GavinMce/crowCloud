@@ -64,8 +64,8 @@ Most cloud management platforms are either locked to one provider or require exp
 
 - **Multi-provider infrastructure** — A single `InfraProvider` trait abstracts VM lifecycle, networking, and storage. Proxmox VE is fully implemented; Hetzner Cloud is a stub ready for completion. Any bare-metal or public cloud can be added as a new crate.
 - **Kubernetes operator** — `crow-operator` watches custom resources (CRDs) in your cluster and reconciles them against the configured provider. Supports VMs, networks, volumes, object stores, databases, and K8s clusters.
-- **REST API** — `crow-api` exposes a versioned HTTP API (`/api/v1`) backed by PostgreSQL. JWT authentication, project and resource-group scoping, full audit log.
-- **CLI** — The `crow` binary covers the full workflow: login, project/resource-group context, VM management, Kubernetes, databases, object storage, expose/domain/tunnel operations, and provider registration.
+- **REST API** — `crow-api` exposes a versioned HTTP API (`/api/v1`) backed by PostgreSQL. JWT authentication, project scoping, full audit log.
+- **CLI** — The `crow` binary covers the full workflow: login, project context, VM management, Kubernetes, databases, object storage, expose/domain/tunnel operations, and provider registration.
 - **Web UI** — React + TypeScript frontend (Vite, oxlint, vitest) served separately from the API.
 - **VPS agent** — A lightweight Axum agent (`crow-vps-agent`) deployed on bare-metal hosts for tunnel and on-host operations.
 - **Helm chart** — Deploy the full stack (API + operator + PostgreSQL) to an existing Kubernetes cluster with a single `helm upgrade --install`.
@@ -150,9 +150,36 @@ The repository is a Cargo workspace. All dependency versions are pinned once in 
 | Kubernetes | 1.32+ | For the operator; any conformant cluster |
 | Proxmox VE | 7+ | For the Proxmox provider |
 
+### Quick bootstrap (fresh VM)
+
+Starting from nothing but a fresh Linux VM (e.g. one you created on your
+Proxmox host — crowCloud can't provision that first VM for you, since it
+isn't running yet) — [`deploy/bootstrap.sh`](deploy/bootstrap.sh) installs
+K3s, Helm, CloudNativePG, and the crowcloud chart in one shot, then prints
+a URL:
+
+```bash
+git clone https://github.com/GavinMce/crowCloud.git
+cd crowCloud
+sudo ./deploy/bootstrap.sh
+```
+
+This is a two-stage flow by nature: bootstrapping the management cluster
+happens first (by hand, on infrastructure you already control), and *then*
+you use the UI it prints a URL for to register your real infrastructure —
+open that URL, create the admin account, add your Proxmox host as a Cloud
+Host, and create your first project.
+
+Set `CROW_DOMAIN=crow.example.com` before running the script to enable
+Ingress with host-based routing instead of the default NodePort exposure
+(requires your own ingress controller and DNS). `CROW_VERSION` pins a
+specific released version instead of `latest`.
+
 ### Deploy with Helm
 
-The fastest path to a running crowCloud is the Helm chart.
+If you already have a Kubernetes cluster and just want the chart (skipping
+`bootstrap.sh`'s K3s/CloudNativePG install), the fastest path is the Helm
+chart directly.
 
 ```bash
 # Add GHCR OCI registry (no helm repo add needed for OCI)
@@ -178,7 +205,10 @@ The chart deploys the API, operator, and (optionally) a bundled PostgreSQL insta
 | `postgres.enabled` | `true` | Deploy bundled PostgreSQL |
 | `postgres.storageSize` | `10Gi` | PVC size for PostgreSQL data |
 | `postgres.storageClass` | `""` | Storage class; empty = cluster default |
-| `ingress.enabled` | `false` | Create an Ingress for the API |
+| `frontend.replicas` | `1` | Frontend pod count |
+| `frontend.service.type` | `ClusterIP` | Set to `NodePort` for zero-ingress exposure (what `bootstrap.sh` uses) |
+| `frontend.service.nodePort` | `30080` | Node port used when `frontend.service.type=NodePort` |
+| `ingress.enabled` | `false` | Create an Ingress routing `/api` to the API and `/` to the frontend |
 | `ingress.host` | `""` | Hostname for the Ingress rule |
 | `ingress.tls` | `false` | Enable TLS on the Ingress |
 
@@ -241,6 +271,7 @@ export CROW_SERVER=http://localhost:8080
 docker pull ghcr.io/gavinmce/crow-api:latest
 docker pull ghcr.io/gavinmce/crow-operator:latest
 docker pull ghcr.io/gavinmce/crow-vps-agent:latest
+docker pull ghcr.io/gavinmce/crow-frontend:latest
 ```
 
 **Build and test commands:**
@@ -369,7 +400,7 @@ pub trait ResourceDriver: Send + Sync {
 }
 ```
 
-`ProvisionCtx` carries `Arc<dyn InfraProvider>`, optional `Arc<dyn NetworkProvider>` and `Arc<dyn DnsProvider>`, and the project/resource-group/resource-name scope.
+`ProvisionCtx` carries `Arc<dyn InfraProvider>`, optional `Arc<dyn NetworkProvider>` and `Arc<dyn DnsProvider>`, and the project/resource-name scope.
 
 **ResourcePhase lifecycle:**
 
@@ -489,8 +520,7 @@ Authentication uses JWT bearer tokens. Obtain a token via `POST /api/v1/auth/log
 |---|---|---|
 | `/api/v1/auth` | `routes::auth` | Login, logout, token refresh |
 | `/api/v1/projects` | `routes::projects` | Project CRUD |
-| `/api/v1/rg` | `routes::resource_groups` | Resource group management |
-| `/api/v1/resources` | `routes::resources` | Resource provisioning and status |
+| `/api/v1/projects/{project}/resources` | `routes::resources` | Resource provisioning and status |
 | `/api/v1/expose` | `routes::expose` | HTTP/TCP expose management |
 
 **Axum patterns:** Routes return `Result<impl IntoResponse, ApiError>`. `ApiError` implements `IntoResponse` and maps to JSON error responses. State is `AppState` (`kube::Client` + `PgPool`), threaded through `Router::with_state`.
@@ -517,9 +547,8 @@ cargo install --path crates/crow-cli
 | Command | Description |
 |---|---|
 | `crow login` | Authenticate and save a session token |
-| `crow context` | Set or display the active project and resource group |
+| `crow context` | Set or display the active project |
 | `crow project` | Create, list, get, and delete projects |
-| `crow rg` | Manage resource groups within a project |
 | `crow vm` | Provision, list, start, stop, and delete virtual machines |
 | `crow k8s` | Provision and manage Kubernetes clusters |
 | `crow db` | Provision and manage databases |

@@ -2,16 +2,13 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 
-use crate::client::{require_project, require_rg, CrowClient};
+use crate::client::{require_project, CrowClient};
 
 #[derive(Args)]
 pub struct VmCmd {
     /// Project (defaults to context)
     #[arg(long, global = true)]
     pub project: Option<String>,
-    /// Resource group (defaults to context)
-    #[arg(long, global = true)]
-    pub rg: Option<String>,
     #[command(subcommand)]
     pub command: VmSubcommand,
 }
@@ -72,16 +69,15 @@ struct VmRow {
 
 pub async fn run(cmd: VmCmd) -> Result<()> {
     let project = require_project(cmd.project)?;
-    let rg = require_rg(cmd.rg)?;
     let client = CrowClient::from_config(None)?;
-    let base = format!("/api/v1/projects/{project}/resource-groups/{rg}/resources");
+    let base = format!("/api/v1/projects/{project}/resources");
 
     match cmd.command {
         VmSubcommand::List => {
             let vms: Vec<VmRow> = client.get(&base).await?;
             let vms: Vec<&VmRow> = vms.iter().filter(|r| r.resource_type == "vm").collect();
             if vms.is_empty() {
-                println!("No VMs in {project}/{rg}.");
+                println!("No VMs in {project}.");
             } else {
                 println!("{:<36}  {:<24}  {:<14}  CREATED", "ID", "NAME", "PHASE");
                 for v in vms {

@@ -2,7 +2,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "crowcloud.fullname" . }}-api
+  name: {{ include "crowcloud.fullname" . }}
   labels:
     {{- include "crowcloud.labels" . | nindent 4 }}
 spec:
@@ -19,11 +19,18 @@ spec:
     - host: {{ required "ingress.host is required when ingress.enabled is true" .Values.ingress.host }}
       http:
         paths:
-          - path: /
+          - path: /api
             pathType: Prefix
             backend:
               service:
                 name: {{ include "crowcloud.fullname" . }}-api
                 port:
                   number: {{ .Values.api.port }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "crowcloud.fullname" . }}-frontend
+                port:
+                  number: {{ .Values.frontend.port }}
 {{- end }}

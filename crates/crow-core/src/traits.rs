@@ -59,7 +59,6 @@ pub struct ProvisionCtx {
     pub dns: Option<Arc<dyn DnsProvider>>,
     pub config: Value,
     pub project: String,
-    pub resource_group: String,
     pub resource_name: String,
 }
 

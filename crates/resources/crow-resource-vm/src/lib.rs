@@ -183,7 +183,6 @@ mod tests {
             dns: None,
             config,
             project: "proj".into(),
-            resource_group: "rg".into(),
             resource_name: "my-vm".into(),
         }
     }
