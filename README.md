@@ -66,7 +66,7 @@ Most cloud management platforms are either locked to one provider or require exp
 - **Kubernetes operator** — `crow-operator` watches custom resources (CRDs) in your cluster and reconciles them against the configured provider. Supports VMs, networks, volumes, object stores, databases, and K8s clusters.
 - **REST API** — `crow-api` exposes a versioned HTTP API (`/api/v1`) backed by PostgreSQL. JWT authentication, project scoping, full audit log.
 - **CLI** — The `crow` binary covers the full workflow: login, project context, VM management, Kubernetes, databases, object storage, expose/domain/tunnel operations, and provider registration.
-- **Web UI** — React + TypeScript frontend (Vite, oxlint, vitest) served separately from the API.
+- **Web UI** — React + TypeScript frontend (Vite, oxlint, vitest) served separately from the API. Azure Portal-inspired IA: service hubs (Compute, Networking, Infrastructure, ...) with Overview/All resources/per-resource-type tabs, and resource detail pages sharing the same layout — see [Frontend Development](CONTRIBUTING.md#frontend-development) in `CONTRIBUTING.md`.
 - **VPS agent** — A lightweight Axum agent (`crow-vps-agent`) deployed on bare-metal hosts for tunnel and on-host operations.
 - **Helm chart** — Deploy the full stack (API + operator + PostgreSQL) to an existing Kubernetes cluster with a single `helm upgrade --install`.
 - **Automated releases** — release-plz manages changelogs and version tags. On every `v*.*.*` tag, Docker images are pushed to GHCR, CLI binaries are built for four targets and attached to a GitHub Release, and the Helm chart is pushed to GHCR OCI.

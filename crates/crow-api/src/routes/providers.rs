@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get},
+    routing::get,
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -20,7 +20,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
-        .route("/{id}", delete(remove))
+        .route("/{id}", get(get_one).patch(update).delete(remove))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -43,6 +43,124 @@ async fn list(
     .map_err(|e| ApiError::Internal(e.into()))?;
 
     Ok(Json(rows))
+}
+
+#[derive(sqlx::FromRow)]
+struct ProviderDetailRow {
+    id: Uuid,
+    name: String,
+    provider_type: String,
+    config: Value,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ProviderDetailResponse {
+    id: Uuid,
+    name: String,
+    provider_type: String,
+    config: Value,
+    created_at: DateTime<Utc>,
+}
+
+/// Masks known secret-shaped keys before a config blob leaves the server.
+/// Generic across provider types rather than proxmox-specific, since any
+/// future provider's config could carry its own secret field under the same
+/// convention.
+fn redact_secrets(config: &mut Value) {
+    if let Some(obj) = config.as_object_mut() {
+        for key in obj.keys().cloned().collect::<Vec<_>>() {
+            if key.ends_with("_secret") || key.ends_with("_password") {
+                obj.insert(key, Value::String("••••••••".to_string()));
+            }
+        }
+    }
+}
+
+async fn get_one(
+    AuthUser(_): AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<ProviderDetailResponse>> {
+    let mut row = sqlx::query_as::<_, ProviderDetailRow>(
+        "SELECT id, name, provider_type, config, created_at FROM providers WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?
+    .ok_or(ApiError::NotFound)?;
+
+    redact_secrets(&mut row.config);
+
+    Ok(Json(ProviderDetailResponse {
+        id: row.id,
+        name: row.name,
+        provider_type: row.provider_type,
+        config: row.config,
+        created_at: row.created_at,
+    }))
+}
+
+#[derive(Deserialize)]
+struct UpdateProviderRequest {
+    /// Shallow-merged into the existing config, so fields the caller doesn't
+    /// mention (notably `token_secret`) are left untouched.
+    config: Value,
+}
+
+async fn update(
+    AuthUser(claims): AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateProviderRequest>,
+) -> ApiResult<Json<ProviderDetailResponse>> {
+    if !claims.is_admin {
+        return Err(ApiError::Forbidden);
+    }
+
+    let existing: Option<(String, Value)> =
+        sqlx::query_as("SELECT provider_type, config FROM providers WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+    let (provider_type, mut config) = existing.ok_or(ApiError::NotFound)?;
+
+    if let (Some(existing_obj), Some(patch_obj)) = (config.as_object_mut(), req.config.as_object())
+    {
+        for (key, value) in patch_obj {
+            existing_obj.insert(key.clone(), value.clone());
+        }
+    }
+
+    // Validate the merged config actually builds before persisting it.
+    build_infra_provider(&provider_type, &config)?;
+
+    sqlx::query("UPDATE providers SET config = $1 WHERE id = $2")
+        .bind(&config)
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+
+    let mut row = sqlx::query_as::<_, ProviderDetailRow>(
+        "SELECT id, name, provider_type, config, created_at FROM providers WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?;
+
+    redact_secrets(&mut row.config);
+
+    Ok(Json(ProviderDetailResponse {
+        id: row.id,
+        name: row.name,
+        provider_type: row.provider_type,
+        config: row.config,
+        created_at: row.created_at,
+    }))
 }
 
 #[derive(Deserialize)]
