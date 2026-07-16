@@ -22,6 +22,7 @@ export interface ResourceDetail {
 export interface CreateVmRequest {
   name: string
   provider_id: string
+  node: string
   cpu: number
   memory_mib: number
   disk_gib: number

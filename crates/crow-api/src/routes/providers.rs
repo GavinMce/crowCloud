@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
         .route("/{id}", get(get_one).patch(update).delete(remove))
+        .nest("/{id}/nodes", super::provider_nodes::router())
 }
 
 #[derive(Serialize, sqlx::FromRow)]

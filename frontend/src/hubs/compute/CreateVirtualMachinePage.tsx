@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useCurrentProject } from '../../hooks/useCurrentProject'
 import { useProviders } from '../../api/providers'
+import { useProviderNodes } from '../../api/providerNodes'
 import { useCreateVm } from '../../api/resources'
 import { ApiError } from '../../api/client'
 import { Breadcrumb } from '../../ui/Breadcrumb'
@@ -27,12 +28,16 @@ export function CreateVirtualMachinePage() {
   const [form, setForm] = useState({
     name: '',
     providerId: '',
+    node: '',
     cpu: 2,
     memoryMib: 2048,
     diskGib: 20,
     image: '',
     ipPool: '',
   })
+
+  const nodes = useProviderNodes(form.providerId || null)
+  const configuredNodes = (nodes.data ?? []).filter((n) => n.configured)
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -42,6 +47,7 @@ export function CreateVirtualMachinePage() {
       await createVm.mutateAsync({
         name: form.name,
         provider_id: form.providerId,
+        node: form.node,
         cpu: form.cpu,
         memory_mib: form.memoryMib,
         disk_gib: form.diskGib,
@@ -92,7 +98,7 @@ export function CreateVirtualMachinePage() {
               <Select
                 label="Cloud host"
                 value={form.providerId}
-                onChange={(e) => setForm({ ...form, providerId: e.target.value })}
+                onChange={(e) => setForm({ ...form, providerId: e.target.value, node: '' })}
                 required
               >
                 <option value="" disabled>
@@ -101,6 +107,27 @@ export function CreateVirtualMachinePage() {
                 {providers.data?.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
+                  </option>
+                ))}
+              </Select>
+              <Select
+                label="Node"
+                value={form.node}
+                onChange={(e) => setForm({ ...form, node: e.target.value })}
+                required
+                disabled={!form.providerId}
+                hint={
+                  form.providerId && !nodes.isLoading && configuredNodes.length === 0
+                    ? "This host has no adopted nodes yet — configure one from its Nodes tab first."
+                    : undefined
+                }
+              >
+                <option value="" disabled>
+                  {form.providerId ? 'Select a node' : 'Select a cloud host first'}
+                </option>
+                {configuredNodes.map((n) => (
+                  <option key={n.name} value={n.name}>
+                    {n.name} ({n.status})
                   </option>
                 ))}
               </Select>
@@ -165,6 +192,9 @@ export function CreateVirtualMachinePage() {
                     <strong>Cloud host:</strong> {providerName ?? '—'}
                   </div>
                   <div>
+                    <strong>Node:</strong> {form.node || '—'}
+                  </div>
+                  <div>
                     <strong>CPU:</strong> {form.cpu}
                   </div>
                   <div>
@@ -186,7 +216,13 @@ export function CreateVirtualMachinePage() {
                 <Button
                   type="submit"
                   variant="primary"
-                  disabled={createVm.isPending || !form.name || !form.providerId || !form.image}
+                  disabled={
+                    createVm.isPending ||
+                    !form.name ||
+                    !form.providerId ||
+                    !form.node ||
+                    !form.image
+                  }
                 >
                   Create
                 </Button>

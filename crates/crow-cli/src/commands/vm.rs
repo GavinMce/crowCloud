@@ -31,6 +31,9 @@ pub struct CreateArgs {
     /// Provider name or UUID
     #[arg(long)]
     pub provider: String,
+    /// Which of the host's adopted nodes to provision on
+    #[arg(long)]
+    pub node: String,
     #[arg(long, default_value = "2")]
     pub cpu: u32,
     /// Memory in MiB
@@ -53,6 +56,7 @@ struct CreateVmBody {
     resource_type: &'static str,
     name: String,
     provider_id: String,
+    node: String,
     cpu: u32,
     memory_mib: u64,
     disk_gib: u64,
@@ -106,6 +110,7 @@ pub async fn run(cmd: VmCmd) -> Result<()> {
                 resource_type: "vm",
                 name: args.name.clone(),
                 provider_id,
+                node: args.node,
                 cpu: args.cpu,
                 memory_mib: args.memory_mib,
                 disk_gib: args.disk_gib,

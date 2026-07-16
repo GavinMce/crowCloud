@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
 import { useDeleteProvider, type ProviderDetail } from '../../../api/providers'
+import { useProviderNodes } from '../../../api/providerNodes'
 import { useCurrentProject } from '../../../hooks/useCurrentProject'
 import { useResources } from '../../../api/resources'
 import { Button } from '../../../ui/Button'
@@ -14,6 +15,7 @@ export function OverviewTab() {
   const deleteProvider = useDeleteProvider()
   const { current } = useCurrentProject()
   const resources = useResources(current ?? '')
+  const nodes = useProviderNodes(host.id)
 
   const [confirmOpen, setConfirmOpen] = useState(false)
 
@@ -25,13 +27,15 @@ export function OverviewTab() {
   const vmCount = (resources.data ?? []).filter(
     (r) => r.resource_type === 'vm' && r.provider_id === host.id,
   ).length
+  const configuredNodeCount = (nodes.data ?? []).filter((n) => n.configured).length
 
   const items: EssentialItem[] = [
     { label: 'Type', value: 'Proxmox' },
     { label: 'URL', value: host.config.url },
-    { label: 'Node', value: host.config.node },
-    { label: 'Default storage', value: host.config.default_storage },
-    { label: 'Default bridge', value: host.config.default_bridge },
+    {
+      label: 'Configured nodes',
+      value: nodes.isLoading ? '—' : `${configuredNodeCount} of ${nodes.data?.length ?? 0}`,
+    },
     {
       label: 'Virtual machines',
       value: current ? vmCount : `— (select a project)`,

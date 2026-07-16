@@ -32,6 +32,16 @@ impl From<crow_provider_registry::RegistryError> for ApiError {
     }
 }
 
+impl From<crow_core::ProviderError> for ApiError {
+    fn from(e: crow_core::ProviderError) -> Self {
+        match e {
+            crow_core::ProviderError::NotFound(_) => ApiError::NotFound,
+            crow_core::ProviderError::Auth(_) => ApiError::Forbidden,
+            other => ApiError::Internal(anyhow::anyhow!(other.to_string())),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {

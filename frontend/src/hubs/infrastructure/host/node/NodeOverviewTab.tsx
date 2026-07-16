@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { useNavigate, useOutletContext } from 'react-router-dom'
-import { useProvider, useUpdateProvider } from '../../../../api/providers'
+import { useOutletContext } from 'react-router-dom'
+import { useConfigureProviderNode, useProviderNode } from '../../../../api/providerNodes'
 import { useCurrentProject } from '../../../../hooks/useCurrentProject'
 import { useResources } from '../../../../api/resources'
 import { ApiError } from '../../../../api/client'
@@ -10,36 +10,35 @@ import { CommandBar } from '../../../../ui/CommandBar'
 import { EssentialsGrid, type EssentialItem } from '../../../../ui/EssentialsGrid'
 import { TextField } from '../../../../ui/TextField'
 import type { NodeOutletContext } from './NodeLayout'
+import { formatCpu, formatMemory, formatUptime, nodeStatusVariant } from '../formatNodeStats'
 
 export function NodeOverviewTab() {
   const { hostId, hostName, nodeName } = useOutletContext<NodeOutletContext>()
-  const navigate = useNavigate()
-  const host = useProvider(hostId)
-  const updateProvider = useUpdateProvider()
+  const node = useProviderNode(hostId, nodeName)
+  const configureNode = useConfigureProviderNode(hostId)
   const { current } = useCurrentProject()
   const resources = useResources(current ?? '')
 
   const [editing, setEditing] = useState(false)
-  const [form, setForm] = useState({ node: '', defaultStorage: '', defaultBridge: '' })
+  const [form, setForm] = useState({ defaultStorage: '', defaultBridge: '' })
   const [error, setError] = useState<string | null>(null)
 
   // Keep the form in sync with the loaded/refetched config, but don't
   // clobber in-progress edits.
   useEffect(() => {
-    if (host.data && !editing) {
+    if (node.data && !editing) {
       setForm({
-        node: host.data.config.node,
-        defaultStorage: host.data.config.default_storage,
-        defaultBridge: host.data.config.default_bridge,
+        defaultStorage: node.data.default_storage ?? '',
+        defaultBridge: node.data.default_bridge ?? '',
       })
     }
-  }, [host.data, editing])
+  }, [node.data, editing])
 
-  if (host.isLoading) {
+  if (node.isLoading) {
     return <p>Loading…</p>
   }
 
-  if (host.isError || !host.data) {
+  if (node.isError || !node.data) {
     return <p className="az-alert az-alert-danger">Failed to load this node.</p>
   }
 
@@ -47,23 +46,14 @@ export function NodeOverviewTab() {
     e.preventDefault()
     setError(null)
     try {
-      await updateProvider.mutateAsync({
-        id: hostId,
-        config: {
-          node: form.node,
-          default_storage: form.defaultStorage,
-          default_bridge: form.defaultBridge,
-        },
+      await configureNode.mutateAsync({
+        name: nodeName,
+        default_storage: form.defaultStorage,
+        default_bridge: form.defaultBridge,
       })
       setEditing(false)
-      if (form.node !== nodeName) {
-        navigate(
-          `/infrastructure/proxmox-hosts/${hostId}/nodes/${encodeURIComponent(form.node)}/overview`,
-          { replace: true },
-        )
-      }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to update node')
+      setError(err instanceof ApiError ? err.message : 'Failed to configure node')
     }
   }
 
@@ -80,17 +70,22 @@ export function NodeOverviewTab() {
   ]
 
   const configItems: EssentialItem[] = [
-    { label: 'Node name', value: host.data.config.node },
-    { label: 'Default storage', value: host.data.config.default_storage },
-    { label: 'Default bridge', value: host.data.config.default_bridge },
+    { label: 'Default storage', value: node.data.default_storage },
+    { label: 'Default bridge', value: node.data.default_bridge },
   ]
 
-  const unavailable: EssentialItem[] = [
-    { label: 'Status', value: 'Not available yet' },
-    { label: 'Proxmox version', value: 'Not available yet' },
-    { label: 'CPU', value: 'Not available yet' },
-    { label: 'Memory', value: 'Not available yet' },
-    { label: 'Local storage usage', value: 'Not available yet' },
+  const liveItems: EssentialItem[] = [
+    {
+      label: 'Status',
+      value: (
+        <span className={`az-pill az-pill-${nodeStatusVariant(node.data.status)}`}>
+          {node.data.status}
+        </span>
+      ),
+    },
+    { label: 'CPU', value: formatCpu(node.data.cpu, node.data.max_cpu) },
+    { label: 'Memory', value: formatMemory(node.data.mem, node.data.max_mem) },
+    { label: 'Uptime', value: formatUptime(node.data.uptime) },
   ]
 
   return (
@@ -99,9 +94,14 @@ export function NodeOverviewTab() {
       <EssentialsGrid items={infoItems} />
 
       <div>
+        <h2>Live status</h2>
+        <EssentialsGrid items={liveItems} />
+      </div>
+
+      <div>
         <div className="az-stack-row az-justify-between az-gap-2">
           <h2>Configuration</h2>
-          {!editing && (
+          {!editing && node.data.configured && (
             <CommandBar>
               <Button variant="default" size="sm" onClick={() => setEditing(true)}>
                 Edit
@@ -110,23 +110,30 @@ export function NodeOverviewTab() {
           )}
         </div>
 
-        {!editing && <EssentialsGrid items={configItems} />}
+        {!editing && node.data.configured && <EssentialsGrid items={configItems} />}
+
+        {!editing && !node.data.configured && (
+          <div className="az-placeholder">
+            <p style={{ margin: 0, fontWeight: 600 }}>Not configured</p>
+            <p style={{ margin: '8px 0 16px' }}>
+              This node was discovered but has no default storage/bridge set — VMs can't be
+              provisioned here until it's adopted.
+            </p>
+            <Button variant="primary" onClick={() => setEditing(true)}>
+              Adopt this node
+            </Button>
+          </div>
+        )}
 
         {editing && (
           <form onSubmit={handleSave}>
             <div className="az-stack-col az-gap-4" style={{ maxWidth: 420 }}>
               <TextField
-                label="Node name"
-                value={form.node}
-                onChange={(e) => setForm({ ...form, node: e.target.value })}
-                required
-                autoFocus
-              />
-              <TextField
                 label="Default storage"
                 value={form.defaultStorage}
                 onChange={(e) => setForm({ ...form, defaultStorage: e.target.value })}
                 required
+                autoFocus
               />
               <TextField
                 label="Default bridge"
@@ -136,7 +143,7 @@ export function NodeOverviewTab() {
               />
               {error && <p className="az-alert az-alert-danger">{error}</p>}
               <div className="az-stack-row az-gap-2">
-                <Button type="submit" variant="primary" disabled={updateProvider.isPending}>
+                <Button type="submit" variant="primary" disabled={configureNode.isPending}>
                   Save
                 </Button>
                 <Button
@@ -153,18 +160,6 @@ export function NodeOverviewTab() {
             </div>
           </form>
         )}
-      </div>
-
-      <div>
-        <h2>Live status</h2>
-        <p className="az-text-secondary">
-          Requires querying this node directly, which isn&apos;t wired up yet — see{' '}
-          <a href="https://github.com/GavinMce/crowCloud/issues/32" target="_blank" rel="noreferrer">
-            issue #32
-          </a>
-          .
-        </p>
-        <EssentialsGrid items={unavailable} />
       </div>
     </div>
   )

@@ -24,9 +24,17 @@ pub struct ProxmoxConfig {
     pub url: String,
     pub token_id: String,
     pub token_secret: String,
-    pub node: String,
-    pub default_storage: String,
-    pub default_bridge: String,
+    /// A host's connection config no longer requires a node — nodes are
+    /// adopted individually via `provider_nodes` (see
+    /// `resolved_node_defaults`). Still `Option` rather than removed
+    /// outright so hosts created before that existed keep working through
+    /// the legacy fallback.
+    #[serde(default)]
+    pub node: Option<String>,
+    #[serde(default)]
+    pub default_storage: Option<String>,
+    #[serde(default)]
+    pub default_bridge: Option<String>,
     #[serde(default)]
     pub tls_insecure: bool,
 }
@@ -39,32 +47,90 @@ pub fn build_infra_provider(
     config: &Value,
 ) -> Result<Arc<dyn InfraProvider>, RegistryError> {
     match provider_type {
-        "proxmox" => {
-            let cfg: ProxmoxConfig = serde_json::from_value(config.clone()).map_err(|e| {
-                RegistryError::InvalidConfig(format!("invalid proxmox config: {e}"))
-            })?;
-            let p = ProxmoxProvider::new(
-                &cfg.url,
-                &cfg.token_id,
-                &cfg.token_secret,
-                &cfg.node,
-                &cfg.default_storage,
-                &cfg.default_bridge,
-                cfg.tls_insecure,
-            )
-            .map_err(|e| {
-                RegistryError::InvalidConfig(format!("failed to build proxmox provider: {e}"))
-            })?;
-            Ok(Arc::new(p))
-        }
+        "proxmox" => Ok(Arc::new(build_proxmox_provider(config)?)),
         other => Err(RegistryError::UnknownType(other.to_string())),
     }
 }
 
-/// Looks up a provider by its Postgres `providers.id` and builds an `InfraProvider`.
+/// Concrete-typed sibling to `build_infra_provider`, for callers that need
+/// Proxmox-specific capabilities (e.g. node listing) not on the shared
+/// `InfraProvider` trait object.
+///
+/// Tolerates a missing `node`/`default_storage`/`default_bridge` (empty
+/// string) — callers building a provider for an actual operation (VM
+/// create/delete/...) must resolve and splice those in first via
+/// `resolve_provider_by_id`/`resolve_provider_by_name`; this function alone
+/// is also used for create-time validation, when they legitimately don't
+/// exist yet.
+pub fn build_proxmox_provider(config: &Value) -> Result<ProxmoxProvider, RegistryError> {
+    let cfg: ProxmoxConfig = serde_json::from_value(config.clone())
+        .map_err(|e| RegistryError::InvalidConfig(format!("invalid proxmox config: {e}")))?;
+    ProxmoxProvider::new(
+        &cfg.url,
+        &cfg.token_id,
+        &cfg.token_secret,
+        cfg.node.as_deref().unwrap_or(""),
+        cfg.default_storage.as_deref().unwrap_or(""),
+        cfg.default_bridge.as_deref().unwrap_or(""),
+        cfg.tls_insecure,
+    )
+    .map_err(|e| RegistryError::InvalidConfig(format!("failed to build proxmox provider: {e}")))
+}
+
+/// Resolves a specific node's default storage/bridge for a provider: first
+/// checks `provider_nodes` (a node adopted via the Nodes tab), then falls
+/// back to the host's own config *only* if that config's legacy `node`
+/// matches — a host created before per-node config existed, whose sole
+/// node is still baked into `providers.config`.
+async fn resolved_node_defaults(
+    pool: &PgPool,
+    provider_id: Uuid,
+    node_name: &str,
+    config: &Value,
+) -> Result<(String, String), RegistryError> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT default_storage, default_bridge FROM provider_nodes
+         WHERE provider_id = $1 AND node_name = $2",
+    )
+    .bind(provider_id)
+    .bind(node_name)
+    .fetch_optional(pool)
+    .await?;
+    if let Some((storage, bridge)) = row {
+        return Ok((storage, bridge));
+    }
+
+    let legacy_node = config.get("node").and_then(|v| v.as_str());
+    let legacy_storage = config.get("default_storage").and_then(|v| v.as_str());
+    let legacy_bridge = config.get("default_bridge").and_then(|v| v.as_str());
+    if legacy_node == Some(node_name) {
+        if let (Some(storage), Some(bridge)) = (legacy_storage, legacy_bridge) {
+            return Ok((storage.to_string(), bridge.to_string()));
+        }
+    }
+
+    Err(RegistryError::InvalidConfig(format!(
+        "node {node_name:?} is not configured for this host — adopt it from the host's Nodes tab first"
+    )))
+}
+
+/// Splices the resolved node/storage/bridge into a copy of `config`.
+fn with_resolved_node(config: &Value, node_name: &str, storage: String, bridge: String) -> Value {
+    let mut config = config.clone();
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert("node".to_string(), Value::String(node_name.to_string()));
+        obj.insert("default_storage".to_string(), Value::String(storage));
+        obj.insert("default_bridge".to_string(), Value::String(bridge));
+    }
+    config
+}
+
+/// Looks up a provider by its Postgres `providers.id`, resolves `node_name`
+/// against its adopted nodes, and builds an `InfraProvider` targeting it.
 pub async fn resolve_provider_by_id(
     pool: &PgPool,
     provider_id: Uuid,
+    node_name: &str,
 ) -> Result<Arc<dyn InfraProvider>, RegistryError> {
     let row: Option<(String, Value)> =
         sqlx::query_as("SELECT provider_type, config FROM providers WHERE id = $1")
@@ -72,16 +138,21 @@ pub async fn resolve_provider_by_id(
             .fetch_optional(pool)
             .await?;
     let (provider_type, config) = row.ok_or(RegistryError::NotFound)?;
+    let (storage, bridge) = resolved_node_defaults(pool, provider_id, node_name, &config).await?;
+    let config = with_resolved_node(&config, node_name, storage, bridge);
     build_infra_provider(&provider_type, &config)
 }
 
-/// Looks up a provider by its Postgres `providers.name` (unique) and builds an
-/// `InfraProvider`. This is what the operator uses to resolve
-/// `VirtualMachineSpec.infra_provider_ref.name` (see `crd::resources` doc-comment
-/// for why that field holds a Postgres name, not a Kubernetes object reference).
+/// Looks up a provider by its Postgres `providers.name` (unique), resolves
+/// `node_name` against its adopted nodes, and builds an `InfraProvider`
+/// targeting it. This is what the operator uses to resolve
+/// `VirtualMachineSpec.infra_provider_ref.name`/`.node` (see `crd::resources`
+/// doc-comment for why `infra_provider_ref` holds a Postgres name, not a
+/// Kubernetes object reference).
 pub async fn resolve_provider_by_name(
     pool: &PgPool,
     provider_name: &str,
+    node_name: &str,
 ) -> Result<(Uuid, Arc<dyn InfraProvider>), RegistryError> {
     let row: Option<(Uuid, String, Value)> =
         sqlx::query_as("SELECT id, provider_type, config FROM providers WHERE name = $1")
@@ -89,6 +160,8 @@ pub async fn resolve_provider_by_name(
             .fetch_optional(pool)
             .await?;
     let (id, provider_type, config) = row.ok_or(RegistryError::NotFound)?;
+    let (storage, bridge) = resolved_node_defaults(pool, id, node_name, &config).await?;
+    let config = with_resolved_node(&config, node_name, storage, bridge);
     Ok((id, build_infra_provider(&provider_type, &config)?))
 }
 
@@ -144,5 +217,27 @@ mod tests {
             Ok(_) => panic!("expected an error for a malformed proxmox config"),
             Err(other) => panic!("expected InvalidConfig, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn build_proxmox_provider_tolerates_a_missing_node() {
+        // Connection-only config (no node/default_storage/default_bridge)
+        // must still build — this is the create-time validation path.
+        let config = serde_json::json!({
+            "url": "https://pve.example.com:8006",
+            "token_id": "root@pam!crow",
+            "token_secret": "secret",
+        });
+        assert!(build_proxmox_provider(&config).is_ok());
+    }
+
+    #[test]
+    fn with_resolved_node_overwrites_the_config_fields() {
+        let config = serde_json::json!({ "url": "https://pve.example.com:8006" });
+        let resolved = with_resolved_node(&config, "pve2", "local-lvm".into(), "vmbr1".into());
+        assert_eq!(resolved["node"], "pve2");
+        assert_eq!(resolved["default_storage"], "local-lvm");
+        assert_eq!(resolved["default_bridge"], "vmbr1");
+        assert_eq!(resolved["url"], "https://pve.example.com:8006");
     }
 }

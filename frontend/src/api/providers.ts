@@ -12,9 +12,12 @@ export interface ProxmoxConfig {
   url: string
   token_id: string
   token_secret: string
-  node: string
-  default_storage: string
-  default_bridge: string
+  /** No longer set at host-creation time — nodes are adopted individually
+   * via the host's Nodes tab. May still be present on hosts created before
+   * that existed. */
+  node?: string
+  default_storage?: string
+  default_bridge?: string
   tls_insecure?: boolean
 }
 

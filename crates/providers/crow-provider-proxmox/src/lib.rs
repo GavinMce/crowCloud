@@ -1,6 +1,7 @@
 mod client;
 mod error;
 mod network;
+mod node;
 mod vm;
 mod volume;
 
@@ -9,6 +10,8 @@ use crow_core::{traits::InfraProvider, types::*, ProviderError};
 
 use client::ProxmoxClient;
 use error::ProxmoxError;
+
+pub use node::ProxmoxNodeSummary;
 
 pub struct ProxmoxProvider {
     client: ProxmoxClient,
@@ -33,6 +36,12 @@ impl ProxmoxProvider {
             default_storage: default_storage.to_string(),
             default_bridge: default_bridge.to_string(),
         })
+    }
+
+    /// Not part of `InfraProvider` — node listing is Proxmox-specific
+    /// (a future provider may have no concept of "nodes" at all).
+    pub async fn list_nodes(&self) -> Result<Vec<ProxmoxNodeSummary>, ProviderError> {
+        node::list_nodes(&self.client).await.map_err(Into::into)
     }
 }
 

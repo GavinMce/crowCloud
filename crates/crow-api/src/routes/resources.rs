@@ -65,6 +65,8 @@ enum CreateResourceRequest {
 struct CreateVmRequest {
     name: String,
     provider_id: Uuid,
+    /// Which of the host's adopted nodes to provision on.
+    node: String,
     cpu: u32,
     #[serde(default = "default_memory_mib")]
     memory_mib: u64,
@@ -168,6 +170,7 @@ async fn create_vm(
                 name: provider_name,
                 namespace: None,
             },
+            node: req.node.clone(),
             ip_pool_ref: req.ip_pool.as_ref().map(|name| ResourceRef {
                 name: name.clone(),
                 namespace: None,

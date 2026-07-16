@@ -207,7 +207,7 @@ async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError>
     let resource_id = resource_id_from_cr_name(&name)?;
 
     let (provider_id, infra) =
-        resolve_provider_by_name(&ctx.db, &vm.spec.infra_provider_ref.name).await?;
+        resolve_provider_by_name(&ctx.db, &vm.spec.infra_provider_ref.name, &vm.spec.node).await?;
 
     let row: Option<ResourceRow> =
         sqlx::query_as("SELECT project, phase, handle FROM resources WHERE id = $1")
@@ -334,7 +334,7 @@ async fn cleanup(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileErro
         handle: Some(handle_json),
     }) = row
     {
-        let infra = resolve_provider_by_id(&ctx.db, provider_id).await?;
+        let infra = resolve_provider_by_id(&ctx.db, provider_id, &vm.spec.node).await?;
         let handle = serde_json::from_value(handle_json)?;
         let provision_ctx = ProvisionCtx {
             infra,
