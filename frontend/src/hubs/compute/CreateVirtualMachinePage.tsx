@@ -36,6 +36,9 @@ export function CreateVirtualMachinePage() {
     diskGib: 20,
     image: '',
     ipPool: '',
+    ipMode: 'Static' as 'Static' | 'Dhcp',
+    addressAssignment: 'auto' as 'auto' | 'specific',
+    requestedIp: '',
   })
 
   const nodes = useProviderNodes(form.providerId || null)
@@ -56,6 +59,11 @@ export function CreateVirtualMachinePage() {
         disk_gib: form.diskGib,
         image: form.image,
         ip_pool: form.ipPool || undefined,
+        ip_mode: form.ipPool ? form.ipMode : undefined,
+        requested_ip:
+          form.ipPool && form.ipMode === 'Static' && form.addressAssignment === 'specific'
+            ? form.requestedIp || undefined
+            : undefined,
       })
       navigate('/compute/virtual-machines')
     } catch (err) {
@@ -181,8 +189,16 @@ export function CreateVirtualMachinePage() {
               <Select
                 label="IP pool (optional)"
                 value={form.ipPool}
-                onChange={(e) => setForm({ ...form, ipPool: e.target.value })}
-                hint="Determines both the static address and which bridge the VM's NIC attaches to. Leave unselected for DHCP on the host's default bridge."
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    ipPool: e.target.value,
+                    ipMode: 'Static',
+                    addressAssignment: 'auto',
+                    requestedIp: '',
+                  })
+                }
+                hint="Determines which bridge the VM's NIC attaches to. Leave unselected for DHCP on the host's default bridge."
               >
                 <option value="">DHCP (node's default bridge)</option>
                 {ipPools.data?.map((pool) => (
@@ -191,6 +207,51 @@ export function CreateVirtualMachinePage() {
                   </option>
                 ))}
               </Select>
+
+              {form.ipPool && (
+                <Select
+                  label="Addressing"
+                  value={form.ipMode}
+                  onChange={(e) =>
+                    setForm({ ...form, ipMode: e.target.value as 'Static' | 'Dhcp' })
+                  }
+                  hint="Static allocates an address from the pool. DHCP just attaches to the pool's bridge and leaves addressing to the network."
+                >
+                  <option value="Static">Static (allocate from pool)</option>
+                  <option value="Dhcp">DHCP (on the pool's bridge)</option>
+                </Select>
+              )}
+
+              {form.ipPool && form.ipMode === 'Static' && (
+                <Select
+                  label="Address assignment"
+                  value={form.addressAssignment}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      addressAssignment: e.target.value as 'auto' | 'specific',
+                    })
+                  }
+                >
+                  <option value="auto">Auto-assign</option>
+                  <option value="specific">Specific address</option>
+                </Select>
+              )}
+
+              {form.ipPool && form.ipMode === 'Static' && form.addressAssignment === 'specific' && (
+                <TextField
+                  label="Requested address"
+                  value={form.requestedIp}
+                  onChange={(e) => setForm({ ...form, requestedIp: e.target.value })}
+                  hint={
+                    selectedPool
+                      ? `Must be within ${selectedPool.range_start} – ${selectedPool.range_end}`
+                      : undefined
+                  }
+                  required
+                />
+              )}
+
               <div>
                 <Button type="button" variant="primary" onClick={() => setTab('review')}>
                   Next: Review + create
@@ -234,6 +295,16 @@ export function CreateVirtualMachinePage() {
                     <strong>Bridge:</strong>{' '}
                     {selectedPool ? `${selectedPool.bridge} (from pool)` : "Node's default bridge"}
                   </div>
+                  {form.ipPool && (
+                    <div>
+                      <strong>Addressing:</strong>{' '}
+                      {form.ipMode === 'Dhcp'
+                        ? "DHCP (on the pool's bridge)"
+                        : form.addressAssignment === 'specific'
+                          ? `Static — ${form.requestedIp || '—'}`
+                          : 'Static — auto-assigned'}
+                    </div>
+                  )}
                 </dl>
               </div>
               {error && <p className="az-alert az-alert-danger">{error}</p>}
@@ -246,7 +317,11 @@ export function CreateVirtualMachinePage() {
                     !form.name ||
                     !form.providerId ||
                     !form.node ||
-                    !form.image
+                    !form.image ||
+                    (!!form.ipPool &&
+                      form.ipMode === 'Static' &&
+                      form.addressAssignment === 'specific' &&
+                      !form.requestedIp)
                   }
                 >
                   Create

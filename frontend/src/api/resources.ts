@@ -28,6 +28,10 @@ export interface CreateVmRequest {
   disk_gib: number
   image: string
   ip_pool?: string
+  /** Only meaningful when `ip_pool` is set. Matches the backend's `IpMode` enum. */
+  ip_mode?: 'Static' | 'Dhcp'
+  /** Only meaningful when `ip_pool` is set and `ip_mode` is `Static` (the default). */
+  requested_ip?: string
 }
 
 function resourcesKey(project: string) {

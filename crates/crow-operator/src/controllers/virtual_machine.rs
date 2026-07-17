@@ -17,7 +17,7 @@ use crow_core::{
     crd::{
         common::ResourceRef,
         networking::{IpClaim, IpClaimSpec, IpPool},
-        resources::{Condition, VirtualMachine, VirtualMachineStatus},
+        resources::{Condition, IpMode, VirtualMachine, VirtualMachineStatus},
     },
     traits::{ProvisionCtx, ResourceDriver},
     types::ResourcePhase,
@@ -121,12 +121,27 @@ struct ResourceRow {
     handle: Option<serde_json::Value>,
 }
 
-struct AllocatedNetwork {
+struct StaticAddress {
     ip: IpAddr,
     prefix_len: u8,
     gateway: IpAddr,
     dns: Vec<String>,
+}
+
+struct AllocatedNetwork {
     bridge: String,
+    /// `None` under `IpMode::Dhcp` — the VM still attaches to the pool's
+    /// bridge, but no address is allocated from it; the VM's own DHCP
+    /// client handles addressing.
+    address: Option<StaticAddress>,
+}
+
+async fn fetch_pool(ctx: &Ctx, pool_ref: &ResourceRef) -> Result<IpPool, ReconcileError> {
+    let pool_api: Api<IpPool> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+    pool_api
+        .get_opt(&pool_ref.name)
+        .await?
+        .ok_or_else(|| ReconcileError::PoolMissing(pool_ref.name.clone()))
 }
 
 /// Ensures an `IpClaim` exists for this VM and reports its allocation, if
@@ -138,6 +153,7 @@ async fn ensure_ip_claim_bound(
     resource_id: Uuid,
     vm_name: &str,
     pool_ref: &ResourceRef,
+    requested_ip: Option<&str>,
 ) -> Result<Option<AllocatedNetwork>, ReconcileError> {
     let claim_name = ip_claim_cr_name(resource_id);
     let claim_api: Api<IpClaim> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
@@ -153,6 +169,7 @@ async fn ensure_ip_claim_bound(
                 pool_ref: pool_ref.clone(),
                 resource_kind: "VirtualMachine".to_string(),
                 resource_name: vm_name.to_string(),
+                requested_ip: requested_ip.map(String::from),
             },
             status: None,
         };
@@ -173,11 +190,7 @@ async fn ensure_ip_claim_bound(
         return Ok(None);
     };
 
-    let pool_api: Api<IpPool> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
-    let pool = pool_api
-        .get_opt(&pool_ref.name)
-        .await?
-        .ok_or_else(|| ReconcileError::PoolMissing(pool_ref.name.clone()))?;
+    let pool = fetch_pool(ctx, pool_ref).await?;
 
     let ip: IpAddr = allocated_ip
         .parse()
@@ -196,11 +209,13 @@ async fn ensure_ip_claim_bound(
         .ok_or_else(|| ReconcileError::BadAddress(pool.spec.cidr.clone()))?;
 
     Ok(Some(AllocatedNetwork {
-        ip,
-        prefix_len,
-        gateway,
-        dns: pool.spec.dns.clone(),
         bridge: pool.spec.bridge.clone(),
+        address: Some(StaticAddress {
+            ip,
+            prefix_len,
+            gateway,
+            dns: pool.spec.dns.clone(),
+        }),
     }))
 }
 
@@ -219,14 +234,34 @@ async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError>
     let row = row.ok_or(ReconcileError::RowMissing(resource_id))?;
 
     let network = match &vm.spec.ip_pool_ref {
-        Some(pool_ref) => {
-            match ensure_ip_claim_bound(ctx, resource_id, &name, pool_ref).await? {
-                Some(net) => Some(net),
-                // Claim exists but isn't bound yet — wait rather than
-                // provision, so cloud-init gets the real address on first boot.
-                None => return Ok(Action::requeue(Duration::from_secs(5))),
+        Some(pool_ref) => match vm.spec.ip_mode {
+            IpMode::Static => {
+                match ensure_ip_claim_bound(
+                    ctx,
+                    resource_id,
+                    &name,
+                    pool_ref,
+                    vm.spec.requested_ip.as_deref(),
+                )
+                .await?
+                {
+                    Some(net) => Some(net),
+                    // Claim exists but isn't bound yet — wait rather than
+                    // provision, so cloud-init gets the real address on first boot.
+                    None => return Ok(Action::requeue(Duration::from_secs(5))),
+                }
             }
-        }
+            // No IpClaim at all: just resolve the pool's bridge so the VM
+            // lands on the right segment, and let its own DHCP client handle
+            // addressing — nothing to wait on.
+            IpMode::Dhcp => {
+                let pool = fetch_pool(ctx, pool_ref).await?;
+                Some(AllocatedNetwork {
+                    bridge: pool.spec.bridge.clone(),
+                    address: None,
+                })
+            }
+        },
         None => None,
     };
 
@@ -237,11 +272,13 @@ async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError>
         "image": vm.spec.image,
     });
     if let Some(net) = &network {
-        config["ip"] = serde_json::json!(net.ip);
-        config["prefix_len"] = serde_json::json!(net.prefix_len);
-        config["gateway"] = serde_json::json!(net.gateway);
-        config["dns"] = serde_json::json!(net.dns);
         config["network_ref"] = serde_json::json!(net.bridge);
+        if let Some(addr) = &net.address {
+            config["ip"] = serde_json::json!(addr.ip);
+            config["prefix_len"] = serde_json::json!(addr.prefix_len);
+            config["gateway"] = serde_json::json!(addr.gateway);
+            config["dns"] = serde_json::json!(addr.dns);
+        }
     }
 
     let provision_ctx = ProvisionCtx {

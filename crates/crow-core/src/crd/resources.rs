@@ -38,10 +38,30 @@ pub struct VirtualMachineSpec {
     /// have zero or several adopted nodes, see `provider_nodes`).
     pub node: String,
     pub ip_pool_ref: Option<ResourceRef>,
+    /// Only meaningful when `ip_pool_ref` is set — ignored otherwise (no
+    /// pool means DHCP on the node's default bridge, unconditionally).
+    #[serde(default)]
+    pub ip_mode: IpMode,
+    /// Only meaningful when `ip_pool_ref` is set and `ip_mode` is `Static`.
+    /// `None` means auto-assign the first free address in the pool's range.
+    pub requested_ip: Option<String>,
     pub cpu: u32,
     pub memory_gib: u32,
     pub disk_gib: u32,
     pub image: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, Default, PartialEq)]
+pub enum IpMode {
+    /// Allocate a static address from the pool via `IpClaim` — the default,
+    /// matching this field's pre-existing behavior before `ip_mode` existed.
+    #[default]
+    Static,
+    /// Attach to the pool's bridge (so the VM lands on the right network
+    /// segment) without allocating an address from the pool — the VM's own
+    /// DHCP client handles addressing, e.g. via a router/firewall already
+    /// serving that segment.
+    Dhcp,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, Default)]

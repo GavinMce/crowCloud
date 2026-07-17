@@ -7,13 +7,15 @@ use axum::{
 use chrono::{DateTime, Utc};
 use crow_core::crd::{
     common::ResourceRef,
-    resources::{VirtualMachine, VirtualMachineSpec},
+    networking::{IpPool, IpPoolSpec},
+    resources::{IpMode, VirtualMachine, VirtualMachineSpec},
 };
 use crow_provider_registry::{vm_cr_name, VM_NAMESPACE};
 use kube::api::{Api, DeleteParams, ObjectMeta, PostParams};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::types::Uuid;
+use std::net::Ipv4Addr;
 
 use crate::{
     error::{ApiError, ApiResult},
@@ -73,10 +75,16 @@ struct CreateVmRequest {
     #[serde(default = "default_disk_gib")]
     disk_gib: u64,
     image: String,
-    /// `IpPool` name to request a static address from. Like
-    /// `infra_provider_ref`, this is a lookup key resolved by the operator's
-    /// `IpClaim` reconciler, not a Kubernetes object reference.
+    /// `IpPool` name. Like `infra_provider_ref`, this is a lookup key
+    /// resolved by the operator's `IpClaim` reconciler, not a Kubernetes
+    /// object reference. `None` means DHCP on the node's default bridge.
     ip_pool: Option<String>,
+    /// Only meaningful when `ip_pool` is set. Defaults to `Static`.
+    #[serde(default)]
+    ip_mode: IpMode,
+    /// Only meaningful when `ip_pool` is set and `ip_mode` is `Static`.
+    /// `None` auto-assigns the first free address in the pool's range.
+    requested_ip: Option<String>,
 }
 
 fn default_memory_mib() -> u64 {
@@ -84,6 +92,39 @@ fn default_memory_mib() -> u64 {
 }
 fn default_disk_gib() -> u64 {
     20
+}
+
+/// Format/range sanity check only — whether the address is actually free is
+/// racy and belongs to the operator's `IpClaim` reconciler, which re-checks
+/// it against live claim state at bind time.
+fn validate_requested_ip(pool: &IpPoolSpec, requested_ip: &str) -> ApiResult<()> {
+    let ip: Ipv4Addr = requested_ip
+        .parse()
+        .map_err(|_| ApiError::BadRequest(format!("invalid IPv4 address '{requested_ip}'")))?;
+    let start: Ipv4Addr = pool
+        .range_start
+        .parse()
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("pool has a malformed range_start")))?;
+    let end: Ipv4Addr = pool
+        .range_end
+        .parse()
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("pool has a malformed range_end")))?;
+    let gateway: Ipv4Addr = pool
+        .gateway
+        .parse()
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("pool has a malformed gateway")))?;
+
+    if !(u32::from(start)..=u32::from(end)).contains(&u32::from(ip)) {
+        return Err(ApiError::BadRequest(format!(
+            "requested_ip '{ip}' is outside the pool's range ({start} - {end})"
+        )));
+    }
+    if ip == gateway {
+        return Err(ApiError::BadRequest(format!(
+            "requested_ip '{ip}' is the pool's gateway"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -122,6 +163,30 @@ async fn create_vm(
         return Err(ApiError::BadRequest(
             "memory_mib must be a whole number of GiB (a multiple of 1024)".to_string(),
         ));
+    }
+
+    if req.requested_ip.is_some() && req.ip_pool.is_none() {
+        return Err(ApiError::BadRequest(
+            "requested_ip requires ip_pool to be set".to_string(),
+        ));
+    }
+    if req.ip_mode == IpMode::Dhcp && req.requested_ip.is_some() {
+        return Err(ApiError::BadRequest(
+            "requested_ip is only used with ip_mode Static".to_string(),
+        ));
+    }
+    if let Some(requested_ip) = &req.requested_ip {
+        // Pool name is only resolved by the operator, not stored as a real
+        // reference — re-fetch it here purely to validate the request early
+        // rather than let a bad address surface as a silently-stuck claim.
+        let pool_api: Api<IpPool> = Api::namespaced(state.kube.clone(), VM_NAMESPACE);
+        let pool_name = req.ip_pool.as_deref().unwrap_or_default();
+        let pool = pool_api
+            .get_opt(pool_name)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?
+            .ok_or_else(|| ApiError::BadRequest(format!("IP pool '{pool_name}' not found")))?;
+        validate_requested_ip(&pool.spec, requested_ip)?;
     }
 
     let provider_name: String = sqlx::query_scalar("SELECT name FROM providers WHERE id = $1")
@@ -175,6 +240,8 @@ async fn create_vm(
                 name: name.clone(),
                 namespace: None,
             }),
+            ip_mode: req.ip_mode.clone(),
+            requested_ip: req.requested_ip.clone(),
             cpu: req.cpu,
             memory_gib: (req.memory_mib / 1024) as u32,
             disk_gib: req.disk_gib as u32,

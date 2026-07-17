@@ -44,6 +44,12 @@ pub struct IpClaimSpec {
     pub pool_ref: ResourceRef,
     pub resource_kind: String,
     pub resource_name: String,
+    /// A specific address to allocate instead of the first free one in the
+    /// pool's range. If it's outside the range, is the gateway, or is
+    /// already allocated, the claim stays unbound (see
+    /// `IpClaimStatus.message`) rather than silently substituting a
+    /// different address.
+    pub requested_ip: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, Default)]
@@ -51,6 +57,9 @@ pub struct IpClaimSpec {
 pub struct IpClaimStatus {
     pub allocated_ip: Option<String>,
     pub phase: Option<String>,
+    /// Human-readable reason the claim is unbound — pool exhausted, or the
+    /// requested address specifically was unavailable.
+    pub message: Option<String>,
 }
 
 // --- TunnelEndpoint ---
