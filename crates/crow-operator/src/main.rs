@@ -8,15 +8,16 @@ use tracing_subscriber::EnvFilter;
 
 mod controllers;
 
-/// Installs the CRDs this operator reconciles. `VirtualMachine` plus the IPAM
-/// pair (`IpPool`/`IpClaim`) are installed — K8sCluster/Database/ObjectStore
-/// stay out of scope until their controllers are implemented.
+/// Installs the CRDs this operator reconciles. `VirtualMachine`/`Disk` plus
+/// the IPAM pair (`IpPool`/`IpClaim`) are installed — K8sCluster/Database/
+/// ObjectStore stay out of scope until their controllers are implemented.
 async fn install_crds(client: &Client) -> anyhow::Result<()> {
     let crds: Api<CustomResourceDefinition> = Api::all(client.clone());
     let pp = PatchParams::apply("crow-operator").force();
 
     for crd in [
         crow_core::crd::resources::VirtualMachine::crd(),
+        crow_core::crd::resources::Disk::crd(),
         crow_core::crd::networking::IpPool::crd(),
         crow_core::crd::networking::IpClaim::crd(),
     ] {

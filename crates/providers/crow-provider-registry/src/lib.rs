@@ -182,6 +182,12 @@ pub fn ip_claim_cr_name(resource_id: Uuid) -> String {
     format!("vm-{resource_id}-ip")
 }
 
+/// Deterministic Kubernetes object name for the `Disk` CR backing a
+/// `resources` row, matching [`vm_cr_name`]'s convention.
+pub fn disk_cr_name(resource_id: Uuid) -> String {
+    format!("disk-{resource_id}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +204,15 @@ mod tests {
         assert_eq!(
             ip_claim_cr_name(id),
             "vm-00000000-0000-0000-0000-000000000000-ip"
+        );
+    }
+
+    #[test]
+    fn disk_cr_name_is_prefixed_with_resource_id() {
+        let id = Uuid::nil();
+        assert_eq!(
+            disk_cr_name(id),
+            "disk-00000000-0000-0000-0000-000000000000"
         );
     }
 

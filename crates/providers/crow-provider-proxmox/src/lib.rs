@@ -98,6 +98,37 @@ impl InfraProvider for ProxmoxProvider {
             .map_err(Into::into)
     }
 
+    async fn attach_volume(
+        &self,
+        vm_handle: &VmHandle,
+        spec: &VolumeSpec,
+    ) -> Result<VolumeHandle, ProviderError> {
+        volume::attach_volume(&self.client, &self.default_storage, vm_handle, spec)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn detach_volume(
+        &self,
+        vm_handle: &VmHandle,
+        handle: &VolumeHandle,
+    ) -> Result<(), ProviderError> {
+        volume::detach_volume(&self.client, vm_handle, handle)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn resize_volume(
+        &self,
+        vm_handle: &VmHandle,
+        handle: &VolumeHandle,
+        new_size_gib: u64,
+    ) -> Result<(), ProviderError> {
+        volume::resize_volume(&self.client, vm_handle, handle, new_size_gib)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn create_network(&self, spec: NetworkSpec) -> Result<NetworkHandle, ProviderError> {
         network::create_network(&self.client, &spec)
             .await

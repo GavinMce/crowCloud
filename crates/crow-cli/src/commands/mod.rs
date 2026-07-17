@@ -4,6 +4,7 @@ use anyhow::Result;
 pub mod auth;
 pub mod context;
 pub mod db;
+pub mod disk;
 pub mod domain;
 pub mod expose;
 pub mod k8s;
@@ -19,6 +20,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         crate::Commands::Context(cmd) => context::run(cmd).await,
         crate::Commands::Project(cmd) => project::run(cmd).await,
         crate::Commands::Vm(cmd) => vm::run(cmd).await,
+        crate::Commands::Disk(cmd) => disk::run(cmd).await,
         crate::Commands::K8s(cmd) => k8s::run(cmd).await,
         crate::Commands::Db(cmd) => db::run(cmd).await,
         crate::Commands::Store(cmd) => store::run(cmd).await,

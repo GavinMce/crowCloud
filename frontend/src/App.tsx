@@ -11,6 +11,10 @@ import { VirtualMachinesPage } from './hubs/compute/VirtualMachinesPage'
 import { CreateVirtualMachinePage } from './hubs/compute/CreateVirtualMachinePage'
 import { VirtualMachineLayout } from './hubs/compute/VirtualMachineLayout'
 import { VirtualMachineOverviewTab } from './hubs/compute/VirtualMachineOverviewTab'
+import { DisksPage } from './hubs/compute/DisksPage'
+import { CreateDiskPage } from './hubs/compute/CreateDiskPage'
+import { DiskLayout } from './hubs/compute/DiskLayout'
+import { DiskOverviewTab } from './hubs/compute/DiskOverviewTab'
 import { ProjectsPage } from './hubs/management/ProjectsPage'
 import { InfrastructureOverviewPage } from './hubs/infrastructure/InfrastructureOverviewPage'
 import { AllHostsPage } from './hubs/infrastructure/AllHostsPage'
@@ -47,15 +51,17 @@ export function App() {
               path="images"
               element={<PlaceholderResourceTypePage hubId="compute" typeId="images" />}
             />
-            <Route
-              path="disks"
-              element={<PlaceholderResourceTypePage hubId="compute" typeId="disks" />}
-            />
+            <Route path="disks" element={<DisksPage />} />
           </Route>
           <Route path="/compute/virtual-machines/create" element={<CreateVirtualMachinePage />} />
           <Route path="/compute/virtual-machines/:name" element={<VirtualMachineLayout />}>
             <Route index element={<Navigate to="overview" replace />} />
             <Route path="overview" element={<VirtualMachineOverviewTab />} />
+          </Route>
+          <Route path="/compute/disks/create" element={<CreateDiskPage />} />
+          <Route path="/compute/disks/:name" element={<DiskLayout />}>
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<DiskOverviewTab />} />
           </Route>
 
           <Route path="/containers" element={<HubLayout hubId="containers" />}>

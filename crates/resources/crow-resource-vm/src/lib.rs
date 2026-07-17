@@ -252,6 +252,28 @@ mod tests {
         async fn delete_volume(&self, _handle: &VolumeHandle) -> Result<(), ProviderError> {
             unimplemented!()
         }
+        async fn attach_volume(
+            &self,
+            _vm_handle: &VmHandle,
+            _spec: &VolumeSpec,
+        ) -> Result<VolumeHandle, ProviderError> {
+            unimplemented!()
+        }
+        async fn detach_volume(
+            &self,
+            _vm_handle: &VmHandle,
+            _handle: &VolumeHandle,
+        ) -> Result<(), ProviderError> {
+            unimplemented!()
+        }
+        async fn resize_volume(
+            &self,
+            _vm_handle: &VmHandle,
+            _handle: &VolumeHandle,
+            _new_size_gib: u64,
+        ) -> Result<(), ProviderError> {
+            unimplemented!()
+        }
         async fn create_network(&self, _spec: NetworkSpec) -> Result<NetworkHandle, ProviderError> {
             unimplemented!()
         }

@@ -21,6 +21,31 @@ pub trait InfraProvider: Send + Sync {
 
     async fn create_volume(&self, spec: VolumeSpec) -> Result<VolumeHandle, ProviderError>;
     async fn delete_volume(&self, handle: &VolumeHandle) -> Result<(), ProviderError>;
+    /// Allocates a new disk directly attached to `vm_handle` and returns the
+    /// real handle (e.g. Proxmox's volid) — unlike `create_volume`, this is
+    /// meaningful for providers (like Proxmox) where a disk can't exist
+    /// without an owning VM.
+    async fn attach_volume(
+        &self,
+        vm_handle: &VmHandle,
+        spec: &VolumeSpec,
+    ) -> Result<VolumeHandle, ProviderError>;
+    /// Removes `handle` from `vm_handle`'s config without destroying the
+    /// underlying storage — the disk survives, just unattached.
+    async fn detach_volume(
+        &self,
+        vm_handle: &VmHandle,
+        handle: &VolumeHandle,
+    ) -> Result<(), ProviderError>;
+    /// Grows an attached disk to `new_size_gib`. Providers are not expected
+    /// to support shrinking a live disk — callers should reject a decrease
+    /// before ever calling this.
+    async fn resize_volume(
+        &self,
+        vm_handle: &VmHandle,
+        handle: &VolumeHandle,
+        new_size_gib: u64,
+    ) -> Result<(), ProviderError>;
 
     async fn create_network(&self, spec: NetworkSpec) -> Result<NetworkHandle, ProviderError>;
     async fn delete_network(&self, handle: &NetworkHandle) -> Result<(), ProviderError>;

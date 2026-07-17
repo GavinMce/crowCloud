@@ -42,6 +42,8 @@ enum ReconcileError {
     #[error(transparent)]
     Driver(#[from] crow_core::DriverError),
     #[error(transparent)]
+    Provider(#[from] crow_core::ProviderError),
+    #[error(transparent)]
     Registry(#[from] crow_provider_registry::RegistryError),
     #[error(transparent)]
     Db(#[from] sqlx::Error),
@@ -49,6 +51,8 @@ enum ReconcileError {
     Kube(#[from] kube::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Anyhow(#[from] anyhow::Error),
 }
 
 struct Ctx {
@@ -319,32 +323,90 @@ async fn cleanup(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileErro
 
     #[derive(sqlx::FromRow)]
     struct CleanupRow {
+        project: String,
+        name: String,
         provider_id: Option<Uuid>,
         handle: Option<serde_json::Value>,
     }
 
     let row: Option<CleanupRow> =
-        sqlx::query_as("SELECT provider_id, handle FROM resources WHERE id = $1")
+        sqlx::query_as("SELECT project, name, provider_id, handle FROM resources WHERE id = $1")
             .bind(resource_id)
             .fetch_optional(&ctx.db)
             .await?;
 
     if let Some(CleanupRow {
-        provider_id: Some(provider_id),
-        handle: Some(handle_json),
+        project,
+        name: resource_name,
+        provider_id,
+        handle,
     }) = row
     {
-        let infra = resolve_provider_by_id(&ctx.db, provider_id, &vm.spec.node).await?;
-        let handle = serde_json::from_value(handle_json)?;
-        let provision_ctx = ProvisionCtx {
-            infra,
-            network: None,
-            dns: None,
-            config: serde_json::Value::Null,
-            project: String::new(),
-            resource_name: name.clone(),
-        };
-        ctx.driver.deprovision(&provision_ctx, &handle).await?;
+        // Detach (never destroy) every disk still attached to this VM before
+        // it's purged — Proxmox destroys any disk still referenced in a VM's
+        // config when that VM is deleted, so this has to happen first, and
+        // synchronously, rather than just declaring intent and trusting the
+        // disk controller's own reconcile loop to catch up in time.
+        if let (Some(provider_id), Some(handle_json)) = (provider_id, &handle) {
+            let attached =
+                super::disk::list_attached_to(&ctx.client, &ctx.db, &project, &resource_name)
+                    .await
+                    .map_err(ReconcileError::from)?;
+            if !attached.is_empty() {
+                let infra = resolve_provider_by_id(&ctx.db, provider_id, &vm.spec.node).await?;
+                let resource_handle: crow_core::types::ResourceHandle =
+                    serde_json::from_value(handle_json.clone())?;
+                let vm_handle: crow_core::types::VmHandle =
+                    serde_json::from_value(resource_handle.data)?;
+
+                let disk_api: Api<crow_core::crd::resources::Disk> =
+                    Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+                for disk in attached {
+                    if let Some(volid) = disk.status.as_ref().and_then(|s| s.volid.clone()) {
+                        infra
+                            .detach_volume(
+                                &vm_handle,
+                                &crow_core::types::VolumeHandle {
+                                    provider_type: "proxmox".to_string(),
+                                    provider_id: volid,
+                                },
+                            )
+                            .await?;
+                    }
+                    let disk_name = disk.name_any();
+                    disk_api
+                        .patch(
+                            &disk_name,
+                            &PatchParams::default(),
+                            &Patch::Merge(serde_json::json!({ "spec": { "vmRef": null } })),
+                        )
+                        .await?;
+                    disk_api
+                        .patch_status(
+                            &disk_name,
+                            &PatchParams::default(),
+                            &Patch::Merge(
+                                serde_json::json!({ "status": { "attachedVmRef": null } }),
+                            ),
+                        )
+                        .await?;
+                }
+            }
+        }
+
+        if let (Some(provider_id), Some(handle_json)) = (provider_id, handle) {
+            let infra = resolve_provider_by_id(&ctx.db, provider_id, &vm.spec.node).await?;
+            let handle = serde_json::from_value(handle_json)?;
+            let provision_ctx = ProvisionCtx {
+                infra,
+                network: None,
+                dns: None,
+                config: serde_json::Value::Null,
+                project: String::new(),
+                resource_name: name.clone(),
+            };
+            ctx.driver.deprovision(&provision_ctx, &handle).await?;
+        }
     }
 
     sqlx::query("DELETE FROM resources WHERE id = $1")

@@ -4,8 +4,8 @@ import { useNavigate } from 'react-router-dom'
 import { useCurrentProject } from '../../hooks/useCurrentProject'
 import { useProviders } from '../../api/providers'
 import { useProviderNodes } from '../../api/providerNodes'
-import { useCreateVm, useResources } from '../../api/resources'
-import { parseDiskHandle, useUpdateDisk } from '../../api/disks'
+import { useResources } from '../../api/resources'
+import { useCreateDisk } from '../../api/disks'
 import { ApiError } from '../../api/client'
 import { Breadcrumb } from '../../ui/Breadcrumb'
 import { Button } from '../../ui/Button'
@@ -15,17 +15,15 @@ import { TextField } from '../../ui/TextField'
 
 const TABS = [
   { id: 'basics', label: 'Basics' },
-  { id: 'disks', label: 'Disks' },
   { id: 'review', label: 'Review + create' },
 ]
 
-export function CreateVirtualMachinePage() {
+export function CreateDiskPage() {
   const navigate = useNavigate()
   const { current } = useCurrentProject()
   const providers = useProviders()
   const resources = useResources(current ?? '')
-  const createVm = useCreateVm(current ?? '')
-  const updateDisk = useUpdateDisk(current ?? '')
+  const createDisk = useCreateDisk(current ?? '')
 
   const [tab, setTab] = useState('basics')
   const [error, setError] = useState<string | null>(null)
@@ -33,55 +31,29 @@ export function CreateVirtualMachinePage() {
     name: '',
     providerId: '',
     node: '',
-    cpu: 2,
-    memoryMib: 2048,
-    diskGib: 20,
-    image: '',
-    ipPool: '',
-    attachDisk: '',
+    sizeGib: 20,
+    vmName: '',
   })
 
   const nodes = useProviderNodes(form.providerId || null)
   const configuredNodes = (nodes.data ?? []).filter((n) => n.configured)
-  const unattachedDisks = (resources.data ?? []).filter(
-    (r) => r.resource_type === 'disk' && !parseDiskHandle(r.handle)?.attached_vm_ref,
-  )
+  const vms = (resources.data ?? []).filter((r) => r.resource_type === 'vm')
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     if (!current) return
     setError(null)
     try {
-      await createVm.mutateAsync({
+      await createDisk.mutateAsync({
         name: form.name,
         provider_id: form.providerId,
         node: form.node,
-        cpu: form.cpu,
-        memory_mib: form.memoryMib,
-        disk_gib: form.diskGib,
-        image: form.image,
-        ip_pool: form.ipPool.trim() ? form.ipPool.trim() : undefined,
+        size_gib: form.sizeGib,
+        vm_name: form.vmName || undefined,
       })
-      if (form.attachDisk) {
-        // The VM itself was created successfully at this point — on a
-        // failure here, stay on the page (don't navigate away) so the error
-        // is actually visible, rather than attach it manually being the
-        // only option.
-        try {
-          await updateDisk.mutateAsync({
-            name: form.attachDisk,
-            req: { vm_name: form.name },
-          })
-        } catch {
-          setError(
-            `VM '${form.name}' was created, but attaching disk '${form.attachDisk}' failed — attach it from the disk's own page instead.`,
-          )
-          return
-        }
-      }
-      navigate('/compute/virtual-machines')
+      navigate('/compute/disks')
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to create virtual machine')
+      setError(err instanceof ApiError ? err.message : 'Failed to create disk')
     }
   }
 
@@ -89,7 +61,7 @@ export function CreateVirtualMachinePage() {
     return (
       <div className="az-page">
         <p className="az-text-secondary">
-          Select or create a project from the top bar before creating a virtual machine.
+          Select or create a project from the top bar before creating a disk.
         </p>
       </div>
     )
@@ -100,13 +72,8 @@ export function CreateVirtualMachinePage() {
   return (
     <div className="az-page">
       <div className="az-stack-col az-gap-4">
-        <Breadcrumb
-          items={[
-            { label: 'Virtual machines', to: '/compute/virtual-machines' },
-            { label: 'Create' },
-          ]}
-        />
-        <h1>Create a virtual machine</h1>
+        <Breadcrumb items={[{ label: 'Disks', to: '/compute/disks' }, { label: 'Create' }]} />
+        <h1>Create a disk</h1>
         <Tabs tabs={TABS} activeTab={tab} onChange={setTab} />
 
         <form onSubmit={handleSubmit}>
@@ -125,6 +92,7 @@ export function CreateVirtualMachinePage() {
                 value={form.providerId}
                 onChange={(e) => setForm({ ...form, providerId: e.target.value, node: '' })}
                 required
+                hint="The disk's storage lives on this host's node — it can only later attach to a VM on the same node."
               >
                 <option value="" disabled>
                   Select a cloud host
@@ -157,64 +125,23 @@ export function CreateVirtualMachinePage() {
                 ))}
               </Select>
               <TextField
-                label="CPU"
+                label="Size (GiB)"
                 type="number"
                 min={1}
-                value={form.cpu}
-                onChange={(e) => setForm({ ...form, cpu: Number(e.target.value) })}
+                value={form.sizeGib}
+                onChange={(e) => setForm({ ...form, sizeGib: Number(e.target.value) })}
                 required
               />
-              <TextField
-                label="Memory (MiB)"
-                type="number"
-                min={1024}
-                step={1024}
-                value={form.memoryMib}
-                onChange={(e) => setForm({ ...form, memoryMib: Number(e.target.value) })}
-                required
-                hint="Must be a whole number of GiB (a multiple of 1024)"
-              />
-              <TextField
-                label="Disk (GiB)"
-                type="number"
-                min={1}
-                value={form.diskGib}
-                onChange={(e) => setForm({ ...form, diskGib: Number(e.target.value) })}
-                required
-              />
-              <TextField
-                label="Image"
-                value={form.image}
-                onChange={(e) => setForm({ ...form, image: e.target.value })}
-                required
-                hint="Proxmox template VMID"
-              />
-              <TextField
-                label="IP pool (optional)"
-                value={form.ipPool}
-                onChange={(e) => setForm({ ...form, ipPool: e.target.value })}
-                hint="Name of an IpPool to request a static address from. Leave blank for DHCP."
-              />
-              <div>
-                <Button type="button" variant="primary" onClick={() => setTab('disks')}>
-                  Next: Disks
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {tab === 'disks' && (
-            <div className="az-stack-col az-gap-4" style={{ maxWidth: 480 }}>
               <Select
-                label="Attach an existing disk (optional)"
-                value={form.attachDisk}
-                onChange={(e) => setForm({ ...form, attachDisk: e.target.value })}
-                hint="Only unattached disks on the same host+node as this VM will actually attach — the request is rejected otherwise. Leave unselected to skip; you can attach one later from the disk's own page."
+                label="Attach to VM (optional)"
+                value={form.vmName}
+                onChange={(e) => setForm({ ...form, vmName: e.target.value })}
+                hint="Leave unselected to create an unattached disk you can assign later. The VM must be on the same node selected above."
               >
-                <option value="">Don't attach a disk</option>
-                {unattachedDisks.map((d) => (
-                  <option key={d.id} value={d.name}>
-                    {d.name}
+                <option value="">Don't attach yet</option>
+                {vms.map((vm) => (
+                  <option key={vm.id} value={vm.name}>
+                    {vm.name}
                   </option>
                 ))}
               </Select>
@@ -243,22 +170,10 @@ export function CreateVirtualMachinePage() {
                     <strong>Node:</strong> {form.node || '—'}
                   </div>
                   <div>
-                    <strong>CPU:</strong> {form.cpu}
+                    <strong>Size:</strong> {form.sizeGib} GiB
                   </div>
                   <div>
-                    <strong>Memory:</strong> {form.memoryMib} MiB
-                  </div>
-                  <div>
-                    <strong>Disk:</strong> {form.diskGib} GiB
-                  </div>
-                  <div>
-                    <strong>Image:</strong> {form.image || '—'}
-                  </div>
-                  <div>
-                    <strong>IP pool:</strong> {form.ipPool || 'DHCP'}
-                  </div>
-                  <div>
-                    <strong>Attach disk:</strong> {form.attachDisk || 'None'}
+                    <strong>Attach to:</strong> {form.vmName || 'Unattached'}
                   </div>
                 </dl>
               </div>
@@ -268,12 +183,7 @@ export function CreateVirtualMachinePage() {
                   type="submit"
                   variant="primary"
                   disabled={
-                    createVm.isPending ||
-                    updateDisk.isPending ||
-                    !form.name ||
-                    !form.providerId ||
-                    !form.node ||
-                    !form.image
+                    createDisk.isPending || !form.name || !form.providerId || !form.node
                   }
                 >
                   Create

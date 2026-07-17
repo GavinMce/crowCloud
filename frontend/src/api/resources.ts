@@ -7,6 +7,7 @@ export type ResourceRow = {
   resource_type: string
   provider_id: string | null
   phase: string
+  handle: unknown
   created_at: string
 }
 

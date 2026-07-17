@@ -49,6 +49,21 @@ impl CrowClient {
         Ok(req.send().await?.error_for_status()?.json().await?)
     }
 
+    pub async fn patch<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let mut req = self
+            .inner
+            .patch(format!("{}{}", self.base, path))
+            .json(body);
+        if let Some(tok) = &self.token {
+            req = req.bearer_auth(tok);
+        }
+        Ok(req.send().await?.error_for_status()?.json().await?)
+    }
+
     pub async fn delete(&self, path: &str) -> Result<()> {
         let mut req = self.inner.delete(format!("{}{}", self.base, path));
         if let Some(tok) = &self.token {

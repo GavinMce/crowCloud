@@ -50,7 +50,8 @@ export const HUBS: HubConfig[] = [
       {
         id: 'disks',
         label: 'Disks',
-        status: 'placeholder',
+        status: 'live',
+        apiResourceType: 'disk',
         description: 'Standalone managed disks, independent of a VM.',
       },
     ],

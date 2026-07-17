@@ -30,6 +30,8 @@ pub enum Commands {
     Project(commands::project::ProjectCmd),
     /// Manage virtual machines
     Vm(commands::vm::VmCmd),
+    /// Manage disks
+    Disk(commands::disk::DiskCmd),
     /// Manage Kubernetes clusters
     K8s(commands::k8s::K8sCmd),
     /// Manage databases
