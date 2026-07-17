@@ -106,7 +106,7 @@ export const HUBS: HubConfig[] = [
       {
         id: 'ip-pools',
         label: 'IP pools',
-        status: 'placeholder',
+        status: 'live',
         description: 'Static IP ranges VMs and clusters can request addresses from.',
       },
       {

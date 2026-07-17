@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useCurrentProject } from '../../hooks/useCurrentProject'
 import { useProviders } from '../../api/providers'
 import { useProviderNodes } from '../../api/providerNodes'
+import { useIpPools } from '../../api/ipPools'
 import { useCreateVm } from '../../api/resources'
 import { ApiError } from '../../api/client'
 import { Breadcrumb } from '../../ui/Breadcrumb'
@@ -14,6 +15,7 @@ import { TextField } from '../../ui/TextField'
 
 const TABS = [
   { id: 'basics', label: 'Basics' },
+  { id: 'networking', label: 'Networking' },
   { id: 'review', label: 'Review + create' },
 ]
 
@@ -38,6 +40,7 @@ export function CreateVirtualMachinePage() {
 
   const nodes = useProviderNodes(form.providerId || null)
   const configuredNodes = (nodes.data ?? []).filter((n) => n.configured)
+  const ipPools = useIpPools()
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -52,7 +55,7 @@ export function CreateVirtualMachinePage() {
         memory_mib: form.memoryMib,
         disk_gib: form.diskGib,
         image: form.image,
-        ip_pool: form.ipPool.trim() ? form.ipPool.trim() : undefined,
+        ip_pool: form.ipPool || undefined,
       })
       navigate('/compute/virtual-machines')
     } catch (err) {
@@ -71,6 +74,7 @@ export function CreateVirtualMachinePage() {
   }
 
   const providerName = providers.data?.find((p) => p.id === form.providerId)?.name
+  const selectedPool = ipPools.data?.find((p) => p.name === form.ipPool)
 
   return (
     <div className="az-page">
@@ -164,12 +168,29 @@ export function CreateVirtualMachinePage() {
                 required
                 hint="Proxmox template VMID"
               />
-              <TextField
+              <div>
+                <Button type="button" variant="primary" onClick={() => setTab('networking')}>
+                  Next: Networking
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {tab === 'networking' && (
+            <div className="az-stack-col az-gap-4" style={{ maxWidth: 480 }}>
+              <Select
                 label="IP pool (optional)"
                 value={form.ipPool}
                 onChange={(e) => setForm({ ...form, ipPool: e.target.value })}
-                hint="Name of an IpPool to request a static address from. Leave blank for DHCP."
-              />
+                hint="Determines both the static address and which bridge the VM's NIC attaches to. Leave unselected for DHCP on the host's default bridge."
+              >
+                <option value="">DHCP (node's default bridge)</option>
+                {ipPools.data?.map((pool) => (
+                  <option key={pool.name} value={pool.name}>
+                    {pool.name} ({pool.cidr}, bridge {pool.bridge})
+                  </option>
+                ))}
+              </Select>
               <div>
                 <Button type="button" variant="primary" onClick={() => setTab('review')}>
                   Next: Review + create
@@ -208,6 +229,10 @@ export function CreateVirtualMachinePage() {
                   </div>
                   <div>
                     <strong>IP pool:</strong> {form.ipPool || 'DHCP'}
+                  </div>
+                  <div>
+                    <strong>Bridge:</strong>{' '}
+                    {selectedPool ? `${selectedPool.bridge} (from pool)` : "Node's default bridge"}
                   </div>
                 </dl>
               </div>

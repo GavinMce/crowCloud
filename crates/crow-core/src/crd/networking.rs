@@ -22,14 +22,6 @@ pub struct IpPoolSpec {
     pub gateway: String,
     pub dns: Vec<String>,
     pub bridge: String,
-    pub purpose: IpPoolPurpose,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, PartialEq)]
-pub enum IpPoolPurpose {
-    Vm,
-    K8sControlPlane,
-    K8sLoadBalancer,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, Default)]

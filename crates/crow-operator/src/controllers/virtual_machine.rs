@@ -126,6 +126,7 @@ struct AllocatedNetwork {
     prefix_len: u8,
     gateway: IpAddr,
     dns: Vec<String>,
+    bridge: String,
 }
 
 /// Ensures an `IpClaim` exists for this VM and reports its allocation, if
@@ -199,6 +200,7 @@ async fn ensure_ip_claim_bound(
         prefix_len,
         gateway,
         dns: pool.spec.dns.clone(),
+        bridge: pool.spec.bridge.clone(),
     }))
 }
 
@@ -239,6 +241,7 @@ async fn apply(vm: &VirtualMachine, ctx: &Ctx) -> Result<Action, ReconcileError>
         config["prefix_len"] = serde_json::json!(net.prefix_len);
         config["gateway"] = serde_json::json!(net.gateway);
         config["dns"] = serde_json::json!(net.dns);
+        config["network_ref"] = serde_json::json!(net.bridge);
     }
 
     let provision_ctx = ProvisionCtx {

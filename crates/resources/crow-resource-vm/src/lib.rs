@@ -29,6 +29,11 @@ struct VmProvisionConfig {
     gateway: Option<IpAddr>,
     #[serde(default)]
     dns: Vec<String>,
+    /// Bridge to attach the VM's NIC to — set from the chosen `IpPool`'s
+    /// `bridge` when one is bound, so the VM actually lands on the L2
+    /// segment its cloud-init-configured static address belongs to instead
+    /// of always falling back to the provider's own default bridge.
+    network_ref: Option<String>,
 }
 
 /// Renders a cloud-init network-config v2 (netplan) document for a static
@@ -74,7 +79,8 @@ impl ResourceDriver for VirtualMachineDriver {
                 "disk_gib": { "type": "integer", "minimum": 1 },
                 "image": { "type": "string" },
                 "hostname": { "type": "string" },
-                "user_data": { "type": "string" }
+                "user_data": { "type": "string" },
+                "network_ref": { "type": "string" }
             }
         })
     }
@@ -111,7 +117,7 @@ impl ResourceDriver for VirtualMachineDriver {
             image: cfg.image,
             ip: cfg.ip,
             cloud_init,
-            network_ref: None,
+            network_ref: cfg.network_ref,
         };
 
         let vm_handle = ctx.infra.create_vm(spec).await?;
@@ -321,6 +327,50 @@ mod tests {
             .expect("network_config should be set once an IP is bound");
         assert!(network_config.contains("10.20.0.10/24"));
         assert!(network_config.contains("gateway4: 10.20.0.1"));
+    }
+
+    #[tokio::test]
+    async fn provision_threads_network_ref_from_the_bound_pools_bridge() {
+        let vm_handle = VmHandle {
+            provider_type: "mock".into(),
+            provider_id: "123".into(),
+            ip: Some("10.20.0.10".parse().unwrap()),
+            name: "my-vm".into(),
+        };
+        let infra = Arc::new(MockInfraProvider::new(vm_handle.clone(), VmStatus::Running));
+        let ctx = ctx_with(
+            infra.clone(),
+            serde_json::json!({
+                "cpu": 2, "memory_mib": 2048, "disk_gib": 20, "image": "9000",
+                "ip": "10.20.0.10", "prefix_len": 24, "gateway": "10.20.0.1",
+                "dns": ["1.1.1.1"], "network_ref": "vmbr1"
+            }),
+        );
+
+        VirtualMachineDriver.provision(&ctx).await.unwrap();
+
+        let last_spec = infra.last_spec.lock().unwrap().clone().unwrap();
+        assert_eq!(last_spec.network_ref, Some("vmbr1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn provision_leaves_network_ref_unset_without_an_ip_pool() {
+        let vm_handle = VmHandle {
+            provider_type: "mock".into(),
+            provider_id: "123".into(),
+            ip: None,
+            name: "my-vm".into(),
+        };
+        let infra = Arc::new(MockInfraProvider::new(vm_handle.clone(), VmStatus::Running));
+        let ctx = ctx_with(
+            infra.clone(),
+            serde_json::json!({ "cpu": 2, "memory_mib": 2048, "disk_gib": 20, "image": "9000" }),
+        );
+
+        VirtualMachineDriver.provision(&ctx).await.unwrap();
+
+        let last_spec = infra.last_spec.lock().unwrap().clone().unwrap();
+        assert_eq!(last_spec.network_ref, None);
     }
 
     #[tokio::test]

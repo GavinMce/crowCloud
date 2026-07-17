@@ -18,7 +18,7 @@ const BOUND: &str = "Bound";
 const PENDING: &str = "Pending";
 
 #[derive(Debug, thiserror::Error)]
-enum ReconcileError {
+pub(crate) enum ReconcileError {
     #[error("pool {0:?} referenced by claim not found")]
     PoolNotFound(String),
     #[error("invalid IPv4 address {0:?} in pool spec")]
@@ -116,7 +116,7 @@ async fn apply(claim: &IpClaim, ctx: &Ctx) -> Result<Action, ReconcileError> {
         )
         .await?;
 
-    recompute_pool_status(ctx, &pool_name, None).await?;
+    recompute_pool_status(&ctx.client, &pool_name, None).await?;
 
     Ok(action)
 }
@@ -126,7 +126,7 @@ async fn cleanup(claim: &IpClaim, ctx: &Ctx) -> Result<Action, ReconcileError> {
     // No provider-side address is actually "owned" by anything external, so
     // there is nothing to release beyond letting this claim disappear — just
     // bring the pool's counters back in sync immediately.
-    recompute_pool_status(ctx, &claim.spec.pool_ref.name, Some(&claim_name)).await?;
+    recompute_pool_status(&ctx.client, &claim.spec.pool_ref.name, Some(&claim_name)).await?;
     Ok(Action::await_change())
 }
 
@@ -155,18 +155,22 @@ async fn bound_addresses(
         .collect())
 }
 
-async fn recompute_pool_status(
-    ctx: &Ctx,
+/// Shared by both the `IpClaim` controller (after a claim binds or is
+/// cleaned up) and the `IpPool` controller (so a freshly created pool with
+/// zero claims still gets its counters initialized instead of sitting at
+/// `status: null` forever).
+pub(crate) async fn recompute_pool_status(
+    client: &Client,
     pool_name: &str,
     exclude_claim: Option<&str>,
 ) -> Result<(), ReconcileError> {
-    let pool_api: Api<IpPool> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+    let pool_api: Api<IpPool> = Api::namespaced(client.clone(), VM_NAMESPACE);
     let Some(pool) = pool_api.get_opt(pool_name).await? else {
         // Pool was deleted out from under its claims — nothing left to update.
         return Ok(());
     };
 
-    let claim_api: Api<IpClaim> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+    let claim_api: Api<IpClaim> = Api::namespaced(client.clone(), VM_NAMESPACE);
     let claims = claim_api.list(&ListParams::default()).await?;
     let allocated = claims
         .items
@@ -222,7 +226,6 @@ fn allocate_ip(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crow_core::crd::networking::IpPoolPurpose;
 
     fn pool(start: &str, end: &str, gateway: &str) -> IpPoolSpec {
         IpPoolSpec {
@@ -232,7 +235,6 @@ mod tests {
             gateway: gateway.to_string(),
             dns: vec!["1.1.1.1".to_string()],
             bridge: "vmbr0".to_string(),
-            purpose: IpPoolPurpose::Vm,
         }
     }
 
