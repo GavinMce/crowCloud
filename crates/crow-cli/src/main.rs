@@ -42,6 +42,8 @@ pub enum Commands {
     Domain(commands::domain::DomainCmd),
     /// Manage infrastructure providers
     Provider(commands::provider::ProviderCmd),
+    /// Manage IP pools
+    IpPool(commands::ippool::IpPoolCmd),
     /// Manage VPS tunnel endpoint
     Tunnel(commands::tunnel::TunnelCmd),
 }

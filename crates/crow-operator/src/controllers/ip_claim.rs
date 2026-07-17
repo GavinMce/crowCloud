@@ -18,7 +18,7 @@ const BOUND: &str = "Bound";
 const PENDING: &str = "Pending";
 
 #[derive(Debug, thiserror::Error)]
-enum ReconcileError {
+pub(crate) enum ReconcileError {
     #[error("pool {0:?} referenced by claim not found")]
     PoolNotFound(String),
     #[error("invalid IPv4 address {0:?} in pool spec")]
@@ -93,19 +93,38 @@ async fn apply(claim: &IpClaim, ctx: &Ctx) -> Result<Action, ReconcileError> {
         .await?
         .ok_or_else(|| ReconcileError::PoolNotFound(pool_name.clone()))?;
 
-    let used = bound_addresses(ctx, &pool_name, &claim_name).await?;
-    let allocated = allocate_ip(&pool.spec, &used)?;
+    let requested = claim
+        .spec
+        .requested_ip
+        .as_deref()
+        .map(parse_v4)
+        .transpose()?;
 
-    let (phase, action) = match allocated {
-        Some(_) => (BOUND, Action::requeue(Duration::from_secs(120))),
-        // Pool exhausted — a recoverable condition (someone frees an address
-        // or resizes the pool), not an error. Retry soonish.
-        None => (PENDING, Action::requeue(Duration::from_secs(30))),
+    let used = bound_addresses(ctx, &pool_name, &claim_name).await?;
+    let allocation = allocate_ip(&pool.spec, &used, requested)?;
+
+    let (phase, message, allocated_ip, action) = match allocation {
+        Allocation::Bound(ip) => (
+            BOUND,
+            None,
+            Some(ip.to_string()),
+            Action::requeue(Duration::from_secs(120)),
+        ),
+        // Unavailable — a recoverable condition (someone frees an address,
+        // resizes the pool, or the request gets corrected), not an error.
+        // Retry soonish.
+        Allocation::Unavailable(reason) => (
+            PENDING,
+            Some(reason),
+            None,
+            Action::requeue(Duration::from_secs(30)),
+        ),
     };
 
     let status = IpClaimStatus {
-        allocated_ip: allocated.map(|ip| ip.to_string()),
+        allocated_ip,
         phase: Some(phase.to_string()),
+        message,
     };
     let claim_api: Api<IpClaim> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
     claim_api
@@ -116,7 +135,7 @@ async fn apply(claim: &IpClaim, ctx: &Ctx) -> Result<Action, ReconcileError> {
         )
         .await?;
 
-    recompute_pool_status(ctx, &pool_name, None).await?;
+    recompute_pool_status(&ctx.client, &pool_name, None).await?;
 
     Ok(action)
 }
@@ -126,7 +145,7 @@ async fn cleanup(claim: &IpClaim, ctx: &Ctx) -> Result<Action, ReconcileError> {
     // No provider-side address is actually "owned" by anything external, so
     // there is nothing to release beyond letting this claim disappear — just
     // bring the pool's counters back in sync immediately.
-    recompute_pool_status(ctx, &claim.spec.pool_ref.name, Some(&claim_name)).await?;
+    recompute_pool_status(&ctx.client, &claim.spec.pool_ref.name, Some(&claim_name)).await?;
     Ok(Action::await_change())
 }
 
@@ -155,18 +174,22 @@ async fn bound_addresses(
         .collect())
 }
 
-async fn recompute_pool_status(
-    ctx: &Ctx,
+/// Shared by both the `IpClaim` controller (after a claim binds or is
+/// cleaned up) and the `IpPool` controller (so a freshly created pool with
+/// zero claims still gets its counters initialized instead of sitting at
+/// `status: null` forever).
+pub(crate) async fn recompute_pool_status(
+    client: &Client,
     pool_name: &str,
     exclude_claim: Option<&str>,
 ) -> Result<(), ReconcileError> {
-    let pool_api: Api<IpPool> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+    let pool_api: Api<IpPool> = Api::namespaced(client.clone(), VM_NAMESPACE);
     let Some(pool) = pool_api.get_opt(pool_name).await? else {
         // Pool was deleted out from under its claims — nothing left to update.
         return Ok(());
     };
 
-    let claim_api: Api<IpClaim> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+    let claim_api: Api<IpClaim> = Api::namespaced(client.clone(), VM_NAMESPACE);
     let claims = claim_api.list(&ListParams::default()).await?;
     let allocated = claims
         .items
@@ -204,25 +227,53 @@ fn pool_size(pool: &IpPoolSpec) -> Result<u32, ReconcileError> {
     Ok(end.saturating_sub(start) + 1)
 }
 
-/// First address in `pool`'s range that is neither the pool's gateway nor
-/// already in `used`. IPv4 only for v1 (matches the existing IPv6 gap in
-/// `crow-provider-proxmox`'s ipconfig heuristic).
+enum Allocation {
+    Bound(Ipv4Addr),
+    Unavailable(String),
+}
+
+/// With no `requested` address: the first address in `pool`'s range that is
+/// neither the pool's gateway nor already in `used`. With a `requested`
+/// address: exactly that address if it's in range, isn't the gateway, and
+/// isn't already in `used` — never a different one, so a caller asking for
+/// a specific address either gets it or a clear reason it's unavailable,
+/// rather than a silent substitution. IPv4 only for v1 (matches the existing
+/// IPv6 gap in `crow-provider-proxmox`'s ipconfig heuristic).
 fn allocate_ip(
     pool: &IpPoolSpec,
     used: &HashSet<Ipv4Addr>,
-) -> Result<Option<Ipv4Addr>, ReconcileError> {
+    requested: Option<Ipv4Addr>,
+) -> Result<Allocation, ReconcileError> {
     let start = u32::from(parse_v4(&pool.range_start)?);
     let end = u32::from(parse_v4(&pool.range_end)?);
     let gateway = parse_v4(&pool.gateway)?;
+
+    if let Some(ip) = requested {
+        return Ok(if !(start..=end).contains(&u32::from(ip)) {
+            Allocation::Unavailable(format!(
+                "requested address {ip} is outside the pool's range"
+            ))
+        } else if ip == gateway {
+            Allocation::Unavailable(format!("requested address {ip} is the pool's gateway"))
+        } else if used.contains(&ip) {
+            Allocation::Unavailable(format!("requested address {ip} is already allocated"))
+        } else {
+            Allocation::Bound(ip)
+        });
+    }
+
     Ok((start..=end)
         .map(Ipv4Addr::from)
-        .find(|ip| *ip != gateway && !used.contains(ip)))
+        .find(|ip| *ip != gateway && !used.contains(ip))
+        .map(Allocation::Bound)
+        .unwrap_or_else(|| {
+            Allocation::Unavailable("pool is exhausted — no free addresses in range".to_string())
+        }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crow_core::crd::networking::IpPoolPurpose;
 
     fn pool(start: &str, end: &str, gateway: &str) -> IpPoolSpec {
         IpPoolSpec {
@@ -232,7 +283,13 @@ mod tests {
             gateway: gateway.to_string(),
             dns: vec!["1.1.1.1".to_string()],
             bridge: "vmbr0".to_string(),
-            purpose: IpPoolPurpose::Vm,
+        }
+    }
+
+    fn bound_ip(allocation: Allocation) -> Ipv4Addr {
+        match allocation {
+            Allocation::Bound(ip) => ip,
+            Allocation::Unavailable(reason) => panic!("expected Bound, got Unavailable({reason})"),
         }
     }
 
@@ -241,8 +298,8 @@ mod tests {
         let spec = pool("10.20.0.10", "10.20.0.12", "10.20.0.1");
         let used = HashSet::new();
         assert_eq!(
-            allocate_ip(&spec, &used).unwrap(),
-            Some("10.20.0.10".parse().unwrap())
+            bound_ip(allocate_ip(&spec, &used, None).unwrap()),
+            "10.20.0.10".parse::<Ipv4Addr>().unwrap()
         );
     }
 
@@ -254,8 +311,8 @@ mod tests {
             .map(|ip| ip.parse().unwrap())
             .collect();
         assert_eq!(
-            allocate_ip(&spec, &used).unwrap(),
-            Some("10.20.0.12".parse().unwrap())
+            bound_ip(allocate_ip(&spec, &used, None).unwrap()),
+            "10.20.0.12".parse::<Ipv4Addr>().unwrap()
         );
     }
 
@@ -264,19 +321,66 @@ mod tests {
         let spec = pool("10.20.0.1", "10.20.0.2", "10.20.0.1");
         let used = HashSet::new();
         assert_eq!(
-            allocate_ip(&spec, &used).unwrap(),
-            Some("10.20.0.2".parse().unwrap())
+            bound_ip(allocate_ip(&spec, &used, None).unwrap()),
+            "10.20.0.2".parse::<Ipv4Addr>().unwrap()
         );
     }
 
     #[test]
-    fn returns_none_when_pool_is_exhausted() {
+    fn reports_unavailable_when_pool_is_exhausted() {
         let spec = pool("10.20.0.10", "10.20.0.11", "10.20.0.1");
         let used: HashSet<Ipv4Addr> = ["10.20.0.10", "10.20.0.11"]
             .into_iter()
             .map(|ip| ip.parse().unwrap())
             .collect();
-        assert_eq!(allocate_ip(&spec, &used).unwrap(), None);
+        assert!(matches!(
+            allocate_ip(&spec, &used, None).unwrap(),
+            Allocation::Unavailable(_)
+        ));
+    }
+
+    #[test]
+    fn allocates_the_requested_address_when_free() {
+        let spec = pool("10.20.0.10", "10.20.0.20", "10.20.0.1");
+        let used = HashSet::new();
+        let requested: Ipv4Addr = "10.20.0.15".parse().unwrap();
+        assert_eq!(
+            bound_ip(allocate_ip(&spec, &used, Some(requested)).unwrap()),
+            requested
+        );
+    }
+
+    #[test]
+    fn rejects_a_requested_address_outside_the_range() {
+        let spec = pool("10.20.0.10", "10.20.0.20", "10.20.0.1");
+        let used = HashSet::new();
+        let requested: Ipv4Addr = "10.20.0.30".parse().unwrap();
+        assert!(matches!(
+            allocate_ip(&spec, &used, Some(requested)).unwrap(),
+            Allocation::Unavailable(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_a_requested_address_thats_already_taken() {
+        let spec = pool("10.20.0.10", "10.20.0.20", "10.20.0.1");
+        let used: HashSet<Ipv4Addr> = ["10.20.0.15".parse().unwrap()].into_iter().collect();
+        let requested: Ipv4Addr = "10.20.0.15".parse().unwrap();
+        assert!(matches!(
+            allocate_ip(&spec, &used, Some(requested)).unwrap(),
+            Allocation::Unavailable(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_a_requested_address_thats_the_gateway() {
+        let spec = pool("10.20.0.10", "10.20.0.20", "10.20.0.1");
+        let used = HashSet::new();
+        let requested: Ipv4Addr = "10.20.0.1".parse().unwrap();
+        assert!(matches!(
+            allocate_ip(&spec, &used, Some(requested)).unwrap(),
+            Allocation::Unavailable(_)
+        ));
     }
 
     #[test]
@@ -289,7 +393,7 @@ mod tests {
     fn rejects_malformed_addresses() {
         let spec = pool("not-an-ip", "10.20.0.19", "10.20.0.1");
         assert!(matches!(
-            allocate_ip(&spec, &HashSet::new()),
+            allocate_ip(&spec, &HashSet::new(), None),
             Err(ReconcileError::BadAddress(_))
         ));
     }

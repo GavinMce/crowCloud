@@ -21,9 +21,13 @@ import { OverviewTab } from './hubs/infrastructure/host/OverviewTab'
 import { NodesTab } from './hubs/infrastructure/host/NodesTab'
 import { VirtualMachinesTab } from './hubs/infrastructure/host/VirtualMachinesTab'
 import { SettingsTab } from './hubs/infrastructure/host/SettingsTab'
-import { NotAvailableTab } from './hubs/infrastructure/host/NotAvailableTab'
+import { NotAvailableTab } from './ui/NotAvailableTab'
 import { NodeLayout } from './hubs/infrastructure/host/node/NodeLayout'
 import { NodeOverviewTab } from './hubs/infrastructure/host/node/NodeOverviewTab'
+import { IpPoolsPage } from './hubs/networking/IpPoolsPage'
+import { CreateIpPoolPage } from './hubs/networking/CreateIpPoolPage'
+import { IpPoolLayout } from './hubs/networking/ipPool/IpPoolLayout'
+import { OverviewTab as IpPoolOverviewTab } from './hubs/networking/ipPool/OverviewTab'
 
 export function App() {
   return (
@@ -92,10 +96,7 @@ export function App() {
             <Route index element={<Navigate to="overview" replace />} />
             <Route path="overview" element={<HubOverviewPage hubId="networking" />} />
             <Route path="all-resources" element={<AllResourcesPage hubId="networking" />} />
-            <Route
-              path="ip-pools"
-              element={<PlaceholderResourceTypePage hubId="networking" typeId="ip-pools" />}
-            />
+            <Route path="ip-pools" element={<IpPoolsPage />} />
             <Route
               path="exposed-endpoints"
               element={<PlaceholderResourceTypePage hubId="networking" typeId="exposed-endpoints" />}
@@ -103,6 +104,29 @@ export function App() {
             <Route
               path="custom-domains"
               element={<PlaceholderResourceTypePage hubId="networking" typeId="custom-domains" />}
+            />
+          </Route>
+          <Route path="/networking/ip-pools/create" element={<CreateIpPoolPage />} />
+          <Route path="/networking/ip-pools/:name" element={<IpPoolLayout />}>
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<IpPoolOverviewTab />} />
+            <Route
+              path="allocations"
+              element={
+                <NotAvailableTab
+                  title="Allocations"
+                  description="Which resource holds which address. Depends on a claims-list endpoint (issue #35)."
+                />
+              }
+            />
+            <Route
+              path="activity-log"
+              element={
+                <NotAvailableTab
+                  title="Activity log"
+                  description="crowCloud's audit log doesn't track which resource an action targeted yet."
+                />
+              }
             />
           </Route>
 

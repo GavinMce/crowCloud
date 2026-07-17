@@ -3,6 +3,7 @@ use sqlx::PgPool;
 
 pub mod database;
 pub mod ip_claim;
+pub mod ip_pool;
 pub mod k8s_cluster;
 pub mod object_store;
 pub mod tunnel;
@@ -15,6 +16,7 @@ pub async fn run_all(client: Client, db: PgPool) -> anyhow::Result<()> {
         object_store::run(client.clone()),
         database::run(client.clone()),
         ip_claim::run(client.clone()),
+        ip_pool::run(client.clone()),
         tunnel::run(client.clone()),
     )?;
     Ok(())
