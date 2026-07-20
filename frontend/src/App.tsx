@@ -24,6 +24,11 @@ import { SettingsTab } from './hubs/infrastructure/host/SettingsTab'
 import { NotAvailableTab } from './ui/NotAvailableTab'
 import { NodeLayout } from './hubs/infrastructure/host/node/NodeLayout'
 import { NodeOverviewTab } from './hubs/infrastructure/host/node/NodeOverviewTab'
+import { KubernetesClustersPage } from './hubs/containers/KubernetesClustersPage'
+import { CreateKubernetesClusterPage } from './hubs/containers/CreateKubernetesClusterPage'
+import { KubernetesClusterLayout } from './hubs/containers/KubernetesClusterLayout'
+import { KubernetesClusterOverviewTab } from './hubs/containers/KubernetesClusterOverviewTab'
+import { KubernetesClusterMetricsTab } from './hubs/containers/KubernetesClusterMetricsTab'
 import { IpPoolsPage } from './hubs/networking/IpPoolsPage'
 import { CreateIpPoolPage } from './hubs/networking/CreateIpPoolPage'
 import { IpPoolLayout } from './hubs/networking/ipPool/IpPoolLayout'
@@ -66,10 +71,19 @@ export function App() {
             <Route index element={<Navigate to="overview" replace />} />
             <Route path="overview" element={<HubOverviewPage hubId="containers" />} />
             <Route path="all-resources" element={<AllResourcesPage hubId="containers" />} />
-            <Route
-              path="kubernetes-clusters"
-              element={<PlaceholderResourceTypePage hubId="containers" typeId="kubernetes-clusters" />}
-            />
+            <Route path="kubernetes-clusters" element={<KubernetesClustersPage />} />
+          </Route>
+          <Route
+            path="/containers/kubernetes-clusters/create"
+            element={<CreateKubernetesClusterPage />}
+          />
+          <Route
+            path="/containers/kubernetes-clusters/:name"
+            element={<KubernetesClusterLayout />}
+          >
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<KubernetesClusterOverviewTab />} />
+            <Route path="monitoring" element={<KubernetesClusterMetricsTab />} />
           </Route>
 
           <Route path="/storage" element={<HubLayout hubId="storage" />}>

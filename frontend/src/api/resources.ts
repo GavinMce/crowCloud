@@ -34,6 +34,30 @@ export interface CreateVmRequest {
   requested_ip?: string
 }
 
+export interface CreateK8sClusterRequest {
+  name: string
+  provider_id: string
+  node: string
+  /** Proxmox template VMID — same convention as `CreateVmRequest.image`. */
+  image: string
+  /** Required — the control plane needs a known-in-advance static address. */
+  ip_pool: string
+  /** Empty installs K3s's current stable. */
+  k3s_version?: string
+  control_plane_cpu: number
+  control_plane_memory_gib: number
+  control_plane_disk_gib: number
+  worker_count: number
+  worker_cpu: number
+  worker_memory_gib: number
+  worker_disk_gib: number
+  pod_cidr?: string
+  service_cidr?: string
+  /** Cilium LB-IPAM range for LoadBalancer services (L2 mode only). */
+  lb_pool_cidr?: string
+  monitoring: boolean
+}
+
 function resourcesKey(project: string) {
   return ['resources', project]
 }
@@ -68,6 +92,31 @@ export function useCreateVm(project: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: resourcesKey(project) })
     },
+  })
+}
+
+export function useCreateK8sCluster(project: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (req: CreateK8sClusterRequest) =>
+      apiFetch<ResourceRow>(`/projects/${encodeURIComponent(project)}/resources`, {
+        method: 'POST',
+        body: JSON.stringify({ resource_type: 'k8s_cluster', ...req }),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: resourcesKey(project) })
+    },
+  })
+}
+
+/** 409s with `cluster is still bootstrapping — no kubeconfig yet` until the
+ * control plane's cloud-init posts its bootstrap callback. */
+export function useDownloadKubeconfig(project: string) {
+  return useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<{ kubeconfig: string }>(
+        `/projects/${encodeURIComponent(project)}/resources/${encodeURIComponent(name)}/kubeconfig`,
+      ),
   })
 }
 

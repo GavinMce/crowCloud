@@ -11,6 +11,20 @@ export function SettingsTab() {
     { label: 'Token ID', value: host.config.token_id },
     { label: 'Token Secret', value: host.config.token_secret },
     { label: 'Allow insecure TLS', value: host.config.tls_insecure ? 'Yes' : 'No' },
+    {
+      label: 'Hardware virtualization (KVM)',
+      value: host.config.kvm === false ? 'Off — VMs use software emulation' : 'On',
+    },
+    {
+      label: 'SSH (snippets)',
+      value: host.config.ssh_private_key
+        ? `${host.config.ssh_user ?? 'root'}@host:${host.config.ssh_port ?? 22}`
+        : 'Not configured — Kubernetes clusters and custom cloud-init will fail',
+    },
+    {
+      label: 'VM debug SSH key',
+      value: host.config.ssh_public_key ?? 'Not configured',
+    },
   ]
 
   return (

@@ -19,6 +19,25 @@ export interface ProxmoxConfig {
   default_storage?: string
   default_bridge?: string
   tls_insecure?: boolean
+  /** Required for VMs with custom cloud-init (K8sCluster's bootstrap
+   * scripts, or any VM created with cloud-init user_data) — Proxmox's REST
+   * API has no upload endpoint for cloud-init "snippets", so crowCloud
+   * SSHes in to place them directly. Plain VM creation works without this. */
+  ssh_user?: string
+  ssh_port?: number
+  /** Comes back masked ("••••••••") once set — never the real value. */
+  ssh_private_key?: string
+  /** Injected into every VM's `authorized_keys` before anything else in
+   * its cloud-init script runs, so a bootstrap failure is still debuggable
+   * afterward. Not sensitive — a public key, returned unmasked. Doesn't
+   * need to be the pair of `ssh_private_key` above (that one's for
+   * crowCloud to reach the host; this one's for a human to reach a VM). */
+  ssh_public_key?: string
+  /** `false` disables hardware-accelerated virtualization (Proxmox's
+   * `kvm=0`) — only needed when the host itself has no VT-x/AMD-V
+   * available (e.g. a nested/virtualized Proxmox install). VMs run much
+   * slower with this off. Defaults to `true`. */
+  kvm?: boolean
 }
 
 export interface CreateProviderRequest {

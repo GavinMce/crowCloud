@@ -89,12 +89,40 @@ pub struct VirtualMachineStatus {
 #[serde(rename_all = "camelCase")]
 pub struct K8sClusterSpec {
     pub infra_provider_ref: ResourceRef,
-    pub ip_pool_ref: Option<ResourceRef>,
+    /// Which of the host's adopted nodes every VM in this cluster (control
+    /// plane and workers alike) is provisioned on — v1 keeps a whole
+    /// cluster on one node, matching the single-control-plane scope below.
+    pub node: String,
+    /// Proxmox template VMID every node VM (control plane and workers) is
+    /// cloned from — same base-OS convention as `VirtualMachineSpec.image`.
+    /// Needs a Linux cloud-init-ready template; nothing distribution-aware
+    /// happens here beyond that.
+    pub image: String,
+    /// Unlike a plain VM's `ip_pool_ref`, this is required, not optional —
+    /// worker join and the bootstrap callback both need a known-in-advance
+    /// control plane address, so the control plane can't be DHCP-only the
+    /// way a bare VM can.
+    pub ip_pool_ref: ResourceRef,
     pub distribution: K8sDistribution,
     pub version: String,
+    /// v1 only actually implements `count: 1` — kube-vip HA (`count: 3`)
+    /// is modeled here for later but not yet built.
     pub control_plane: ControlPlaneSpec,
     pub workers: WorkerSpec,
     pub network: K8sNetworkSpec,
+    /// Installs kube-prometheus-stack when true. Opt-in, not default —
+    /// Prometheus is memory-hungry and this platform targets modest
+    /// self-hosted hardware.
+    #[serde(default)]
+    pub monitoring: bool,
+    /// Pre-shared K3s join token, generated once at creation time (not left
+    /// to K3s's own auto-generation) so worker cloud-init never needs to
+    /// read anything back from the control plane first.
+    pub cluster_token: String,
+    /// Per-cluster secret the control plane's cloud-init presents when it
+    /// calls back to crow-api to report the cluster is up — see
+    /// `crow-api`'s `routes::k8s_bootstrap`.
+    pub bootstrap_secret: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
@@ -129,7 +157,8 @@ pub struct WorkerSpec {
 pub struct K8sNetworkSpec {
     pub pod_cidr: String,
     pub service_cidr: String,
-    /// IP range handed to MetalLB for LoadBalancer services
+    /// IP range handed to Cilium's native LB-IPAM for LoadBalancer services
+    /// (Cilium replaces MetalLB — no separate load balancer controller).
     pub lb_pool: Option<String>,
     pub lb_mode: Option<LbMode>,
 }

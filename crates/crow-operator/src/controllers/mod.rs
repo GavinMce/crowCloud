@@ -11,8 +11,8 @@ pub mod virtual_machine;
 
 pub async fn run_all(client: Client, db: PgPool) -> anyhow::Result<()> {
     tokio::try_join!(
-        virtual_machine::run(client.clone(), db),
-        k8s_cluster::run(client.clone()),
+        virtual_machine::run(client.clone(), db.clone()),
+        k8s_cluster::run(client.clone(), db),
         object_store::run(client.clone()),
         database::run(client.clone()),
         ip_claim::run(client.clone()),

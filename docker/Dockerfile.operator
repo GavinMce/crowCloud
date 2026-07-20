@@ -12,6 +12,9 @@ COPY . .
 RUN cargo build --release --bin crow-operator
 
 FROM debian:trixie-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+# openssh-client: the only way to upload Proxmox cloud-init "snippets" — its
+# REST API has no upload endpoint for that content type. See
+# crow-provider-proxmox's ssh.rs.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssh-client && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/crow-operator /usr/local/bin/
 CMD ["crow-operator"]

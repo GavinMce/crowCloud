@@ -16,30 +16,81 @@ pub struct TaskStatus {
     pub exit_status: Option<String>,
 }
 
+/// SSH is the only way to place a file under a Proxmox storage's
+/// `snippets/` directory — the REST API has no upload endpoint for that
+/// content type (see `crate::ssh`). `None` when a host has no SSH
+/// credentials configured; snippet-dependent operations (custom cloud-init
+/// `user_data`/`network_config`) then fail with a clear "SSH not
+/// configured" error instead of the opaque 400 Proxmox itself returns.
+pub struct SshCredentials {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub private_key_pem: String,
+}
+
 pub struct ProxmoxClient {
     http: Client,
     pub base: String,
     auth: String,
     pub node: String,
+    pub ssh: Option<SshCredentials>,
+    /// `false` disables hardware-accelerated virtualization on VMs created
+    /// against this host (Proxmox's `kvm=0`, falling back to slow QEMU/TCG
+    /// software emulation) — only needed when the host itself has no
+    /// VT-x/AMD-V available to it (e.g. a nested/virtualized Proxmox
+    /// install without nested-virt passed through). Defaults to `true`
+    /// (normal hardware acceleration) so this never silently slows down a
+    /// host that doesn't need it.
+    pub kvm: bool,
+}
+
+/// Strips scheme and port/path from a Proxmox API URL to get the bare
+/// hostname/IP SSH should target — the same host, just a different port.
+fn host_from_url(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    let without_scheme = trimmed
+        .rsplit_once("://")
+        .map(|(_scheme, rest)| rest)
+        .unwrap_or(trimmed);
+    let host_and_maybe_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+    host_and_maybe_port
+        .rsplit_once(':')
+        .map(|(host, _port)| host)
+        .unwrap_or(host_and_maybe_port)
+        .to_string()
 }
 
 impl ProxmoxClient {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         url: &str,
         token_id: &str,
         token_secret: &str,
         node: &str,
         tls_insecure: bool,
+        ssh_user: Option<&str>,
+        ssh_port: Option<u16>,
+        ssh_private_key: Option<&str>,
+        kvm: bool,
     ) -> Result<Self, ProxmoxError> {
         let http = Client::builder()
             .danger_accept_invalid_certs(tls_insecure)
             .timeout(Duration::from_secs(30)) // fix: per-request timeout so task-level deadlines actually fire
             .build()?;
+        let ssh = ssh_private_key.map(|key| SshCredentials {
+            host: host_from_url(url),
+            port: ssh_port.unwrap_or(22),
+            user: ssh_user.unwrap_or("root").to_string(),
+            private_key_pem: key.to_string(),
+        });
         Ok(Self {
             http,
             base: url.trim_end_matches('/').to_string(),
             auth: format!("PVEAPIToken={token_id}={token_secret}"),
             node: node.to_string(),
+            ssh,
+            kvm,
         })
     }
 
@@ -92,23 +143,6 @@ impl ProxmoxClient {
             .await?;
         let env: PveEnvelope<T> = self.parse_raw(resp).await?;
         Ok(env.data)
-    }
-
-    pub async fn post_multipart<T: DeserializeOwned>(
-        &self,
-        path: &str,
-        form: reqwest::multipart::Form,
-    ) -> Result<T, ProxmoxError> {
-        let resp = self
-            .http
-            .post(self.url(path))
-            .header("Authorization", &self.auth)
-            .multipart(form)
-            .send()
-            .await?;
-        let env: PveEnvelope<T> = self.parse_raw(resp).await?;
-        env.data
-            .ok_or_else(|| ProxmoxError::Parse("empty data field".into()))
     }
 
     /// PUT with form body; returns nothing on success.

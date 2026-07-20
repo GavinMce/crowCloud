@@ -1,0 +1,11 @@
+-- `ResourcePhase::Failed(String)`/`Degraded(String)` embed a driver-supplied
+-- message ("Failed: {msg}") into the stored phase itself (see
+-- `crow_core::types::ResourcePhase`'s `Display` impl) rather than a
+-- separate error column. VARCHAR(50) was only ever wide enough for the
+-- plain variant names (e.g. "Bootstrapping") — any driver producing a
+-- message longer than ~42 characters fails the UPDATE outright, live-tested
+-- via crow-resource-k8s's own bootstrap-timeout message ("Failed: bootstrap
+-- callback never arrived within 45 minutes", 58 chars). No length that
+-- comfortably fits every current and future driver message, so TEXT
+-- instead of picking another arbitrary cap.
+ALTER TABLE resources ALTER COLUMN phase TYPE TEXT;

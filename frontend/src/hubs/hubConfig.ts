@@ -64,8 +64,9 @@ export const HUBS: HubConfig[] = [
       {
         id: 'kubernetes-clusters',
         label: 'Kubernetes clusters',
-        status: 'placeholder',
-        description: 'Managed k3s/RKE2 clusters.',
+        status: 'live',
+        apiResourceType: 'k8s_cluster',
+        description: 'Managed K3s clusters with Cilium and Longhorn preinstalled.',
       },
     ],
   },
