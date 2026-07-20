@@ -13,6 +13,8 @@ pub enum ProxmoxError {
     TaskTimeout(u64),
     #[error("unexpected response: {0}")]
     Parse(String),
+    #[error("SSH error: {0}")]
+    Ssh(String),
 }
 
 impl From<ProxmoxError> for ProviderError {

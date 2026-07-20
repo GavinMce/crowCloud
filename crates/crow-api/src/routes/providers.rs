@@ -71,7 +71,7 @@ struct ProviderDetailResponse {
 fn redact_secrets(config: &mut Value) {
     if let Some(obj) = config.as_object_mut() {
         for key in obj.keys().cloned().collect::<Vec<_>>() {
-            if key.ends_with("_secret") || key.ends_with("_password") {
+            if key.ends_with("_secret") || key.ends_with("_password") || key.ends_with("_key") {
                 obj.insert(key, Value::String("••••••••".to_string()));
             }
         }

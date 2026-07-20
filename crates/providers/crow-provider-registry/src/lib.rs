@@ -37,6 +37,34 @@ pub struct ProxmoxConfig {
     pub default_bridge: Option<String>,
     #[serde(default)]
     pub tls_insecure: bool,
+    /// SSH is the only way to upload cloud-init snippets — Proxmox's REST
+    /// API has no upload endpoint for content type "snippets". Without
+    /// this, VM creation still works, but any `cloud_init.user_data`/
+    /// `network_config` (K8sCluster's bootstrap scripts) fails.
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+    #[serde(default)]
+    pub ssh_port: Option<u16>,
+    #[serde(default)]
+    pub ssh_private_key: Option<String>,
+    /// Public counterpart of an operator's own debugging key (not
+    /// necessarily `ssh_private_key`'s pair — any key the operator wants
+    /// authorized) — injected into every VM's `authorized_keys` via cloud-init
+    /// as one of the first things the script does, so a bootstrap script
+    /// failure is still debuggable afterward instead of leaving no way in.
+    /// Not sensitive — a public key is fine to store/return unmasked.
+    #[serde(default)]
+    pub ssh_public_key: Option<String>,
+    /// `false` disables hardware-accelerated virtualization (Proxmox's
+    /// `kvm=0`) — only needed when the host itself has no VT-x/AMD-V
+    /// available (e.g. a nested/virtualized Proxmox install). Defaults to
+    /// `true`; VMs run drastically slower with this off.
+    #[serde(default = "default_kvm")]
+    pub kvm: bool,
+}
+
+fn default_kvm() -> bool {
+    true
 }
 
 /// Pure, sync factory. Relocated from crow-api so both crow-api and
@@ -73,6 +101,10 @@ pub fn build_proxmox_provider(config: &Value) -> Result<ProxmoxProvider, Registr
         cfg.default_storage.as_deref().unwrap_or(""),
         cfg.default_bridge.as_deref().unwrap_or(""),
         cfg.tls_insecure,
+        cfg.ssh_user.as_deref(),
+        cfg.ssh_port,
+        cfg.ssh_private_key.as_deref(),
+        cfg.kvm,
     )
     .map_err(|e| RegistryError::InvalidConfig(format!("failed to build proxmox provider: {e}")))
 }
@@ -182,6 +214,27 @@ pub fn ip_claim_cr_name(resource_id: Uuid) -> String {
     format!("vm-{resource_id}-ip")
 }
 
+/// Deterministic Kubernetes object name for the `K8sCluster` CR backing a
+/// `resources` row, matching [`vm_cr_name`]'s convention.
+pub fn k8s_cluster_cr_name(resource_id: Uuid) -> String {
+    format!("k8s-{resource_id}")
+}
+
+/// Deterministic Kubernetes object name for the `IpClaim` CR the control
+/// plane's static address is requested through.
+pub fn k8s_cluster_ip_claim_cr_name(resource_id: Uuid) -> String {
+    format!("k8s-{resource_id}-ip")
+}
+
+/// Per-worker `IpClaim` name — workers get a static address from the same
+/// pool as the control plane, same reasoning as the control plane itself:
+/// DHCP on this network has proven unreliable in practice (new MAC
+/// addresses observed getting no lease at all), and crowCloud already owns
+/// the pool capacity to just not depend on it.
+pub fn k8s_cluster_worker_ip_claim_cr_name(resource_id: Uuid, worker_index: u32) -> String {
+    format!("k8s-{resource_id}-w{worker_index}-ip")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +251,33 @@ mod tests {
         assert_eq!(
             ip_claim_cr_name(id),
             "vm-00000000-0000-0000-0000-000000000000-ip"
+        );
+    }
+
+    #[test]
+    fn k8s_cluster_cr_name_is_prefixed_with_resource_id() {
+        let id = Uuid::nil();
+        assert_eq!(
+            k8s_cluster_cr_name(id),
+            "k8s-00000000-0000-0000-0000-000000000000"
+        );
+    }
+
+    #[test]
+    fn k8s_cluster_ip_claim_cr_name_is_derived_from_the_k8s_cluster_cr_name() {
+        let id = Uuid::nil();
+        assert_eq!(
+            k8s_cluster_ip_claim_cr_name(id),
+            "k8s-00000000-0000-0000-0000-000000000000-ip"
+        );
+    }
+
+    #[test]
+    fn k8s_cluster_worker_ip_claim_cr_name_includes_the_worker_index() {
+        let id = Uuid::nil();
+        assert_eq!(
+            k8s_cluster_worker_ip_claim_cr_name(id, 2),
+            "k8s-00000000-0000-0000-0000-000000000000-w2-ip"
         );
     }
 

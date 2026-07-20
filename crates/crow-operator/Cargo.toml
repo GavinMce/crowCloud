@@ -13,6 +13,7 @@ crow-core = { path = "../crow-core" }
 crow-db = { path = "../crow-db" }
 crow-provider-registry = { path = "../providers/crow-provider-registry" }
 crow-resource-vm = { path = "../resources/crow-resource-vm" }
+crow-resource-k8s = { path = "../resources/crow-resource-k8s" }
 
 tokio.workspace = true
 kube.workspace = true

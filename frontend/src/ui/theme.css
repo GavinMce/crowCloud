@@ -151,6 +151,26 @@
   text-decoration: underline;
 }
 
+/* Usage meter (Monitoring tab) */
+.az-meter {
+  width: 100%;
+  height: 6px;
+  background: var(--az-border);
+  border-radius: var(--az-radius);
+  overflow: hidden;
+}
+.az-meter-fill {
+  height: 100%;
+  background: var(--az-accent);
+  border-radius: var(--az-radius);
+}
+.az-meter-fill-warning {
+  background: var(--az-warning);
+}
+.az-meter-fill-danger {
+  background: var(--az-danger);
+}
+
 /* StatusPill */
 .az-pill {
   display: inline-flex;

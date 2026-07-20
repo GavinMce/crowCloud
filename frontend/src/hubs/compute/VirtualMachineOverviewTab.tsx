@@ -9,11 +9,14 @@ import { Modal } from '../../ui/Modal'
 import { StatusPill } from '../../ui/StatusPill'
 
 function vmIp(handle: unknown): string | null {
-  if (handle && typeof handle === 'object' && 'ip' in handle) {
-    const ip = (handle as { ip?: unknown }).ip
-    return typeof ip === 'string' ? ip : null
-  }
-  return null
+  // `resources.handle` is always the outer `ResourceHandle{resource_type,
+  // data}` envelope, never the driver's handle shape directly — matches
+  // every backend reader of this same column.
+  if (!handle || typeof handle !== 'object') return null
+  const data = (handle as { data?: unknown }).data
+  if (!data || typeof data !== 'object' || !('ip' in data)) return null
+  const ip = (data as { ip?: unknown }).ip
+  return typeof ip === 'string' ? ip : null
 }
 
 export function VirtualMachineOverviewTab() {

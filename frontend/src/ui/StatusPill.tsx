@@ -9,6 +9,7 @@ const PHASE_VARIANT: Record<string, 'success' | 'warning' | 'danger'> = {
   Deleting: 'warning',
   Failed: 'danger',
   Degraded: 'danger',
+  NotReady: 'danger',
 }
 
 function variantFor(phase: string): 'success' | 'warning' | 'danger' | 'default' {

@@ -2,6 +2,7 @@ mod client;
 mod error;
 mod network;
 mod node;
+mod ssh;
 mod vm;
 mod volume;
 
@@ -20,6 +21,7 @@ pub struct ProxmoxProvider {
 }
 
 impl ProxmoxProvider {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         url: &str,
         token_id: &str,
@@ -28,9 +30,23 @@ impl ProxmoxProvider {
         default_storage: &str,
         default_bridge: &str,
         tls_insecure: bool,
+        ssh_user: Option<&str>,
+        ssh_port: Option<u16>,
+        ssh_private_key: Option<&str>,
+        kvm: bool,
     ) -> Result<Self, ProviderError> {
-        let client = ProxmoxClient::new(url, token_id, token_secret, node, tls_insecure)
-            .map_err(|e: ProxmoxError| ProviderError::from(e))?;
+        let client = ProxmoxClient::new(
+            url,
+            token_id,
+            token_secret,
+            node,
+            tls_insecure,
+            ssh_user,
+            ssh_port,
+            ssh_private_key,
+            kvm,
+        )
+        .map_err(|e: ProxmoxError| ProviderError::from(e))?;
         Ok(Self {
             client,
             default_storage: default_storage.to_string(),
