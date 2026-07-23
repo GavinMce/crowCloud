@@ -238,7 +238,13 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
     qm create "${{SEED_VMID}}" --name crowcloud-seed --memory 4096 --cores 2 \
         --net0 "virtio,bridge=${{DEFAULT_BRIDGE}}" --scsihw virtio-scsi-pci \
         --ostype l26
-    qm importdisk "${{SEED_VMID}}" "/var/lib/vz/import/crowcloud-seed-base.qcow2" "${{DEFAULT_STORAGE}}"
+    # Confirmed live: hardcoding the default directory storage's import
+    # path broke on this host's real (different) storage backend with
+    # "couldn't find the crowcloud file". `pvesm path` resolves the
+    # actual filesystem path for the volume `download-url` just wrote,
+    # regardless of storage backend.
+    SEED_IMAGE_PATH="$(pvesm path "${{DEFAULT_STORAGE}}:import/crowcloud-seed-base.qcow2")"
+    qm importdisk "${{SEED_VMID}}" "${{SEED_IMAGE_PATH}}" "${{DEFAULT_STORAGE}}"
     qm set "${{SEED_VMID}}" --scsi0 "${{DEFAULT_STORAGE}}:vm-${{SEED_VMID}}-disk-0"
     qm set "${{SEED_VMID}}" --boot c --bootdisk scsi0
     qm resize "${{SEED_VMID}}" scsi0 +12G
@@ -414,6 +420,17 @@ mod tests {
         assert!(out.contains("/storage/\"${DEFAULT_STORAGE}\"/download-url"));
         assert!(out.contains("cloud.debian.org"));
         assert!(!out.contains("qm clone"));
+    }
+
+    #[test]
+    fn hook_resolves_the_seed_image_path_via_pvesm_not_a_hardcoded_storage_path() {
+        // Confirmed live: hardcoding /var/lib/vz/import/ only works for
+        // the default "local" directory storage -- broke with "couldn't
+        // find the crowcloud file" on a host using a different storage
+        // backend. `pvesm path` resolves the real path for any backend.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains(r#"pvesm path "${DEFAULT_STORAGE}:import/crowcloud-seed-base.qcow2""#));
+        assert!(!out.contains("/var/lib/vz/import/"));
     }
 
     #[test]
