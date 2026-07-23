@@ -304,6 +304,15 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
     }
 
     let output_iso = args.out.join("proxmox-auto.iso");
+    // `--on-first-boot` bundles a script that PVE 8.1+'s auto-install
+    // runs once, automatically, on the installed system's first boot --
+    // this is what makes a single USB stick self-contained end to end
+    // (base install + fabric setup + self-registration), no manual
+    // delivery step after install. NOTE: exact flag name/behavior is
+    // not verified against a live `proxmox-auto-install-assistant` in
+    // this environment (not installed here) -- if this errors as an
+    // unrecognized flag, that's the first thing to check against
+    // whatever version is actually installed.
     let status = Command::new("proxmox-auto-install-assistant")
         .arg("prepare-iso")
         .arg(&base_iso)
@@ -311,6 +320,8 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         .arg("iso")
         .arg("--answer-file")
         .arg(&answer_path)
+        .arg("--on-first-boot")
+        .arg(&hook_path)
         .arg("--output")
         .arg(&output_iso)
         .status()
@@ -322,9 +333,9 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
 
     println!("Built {}", output_iso.display());
     println!(
-        "Note: {} needs to be delivered onto the installed system as its \
-         post-install hook -- proxmox-auto-install-assistant's own \
-         hook-script wiring isn't driven by this command yet.",
+        "This ISO is fully self-contained -- boot it from USB and the \
+         installed system applies fabric config and self-registers on \
+         its own first boot, no manual delivery of {} required.",
         hook_path.display()
     );
     Ok(())
