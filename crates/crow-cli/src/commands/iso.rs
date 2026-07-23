@@ -92,6 +92,13 @@ pub struct VyosBuildArgs {
     /// host's `--bgp-peer-password` (#66)
     #[arg(long)]
     pub bgp_peer_password: String,
+    /// Keep SSH password auth enabled alongside the new key, instead of
+    /// disabling it. Default is key-only; use this while validating key
+    /// access on a given box, since a bad key commit + disabled password
+    /// auth means an SSH lockout with no fallback (see #66's incident
+    /// notes)
+    #[arg(long)]
+    pub allow_password_auth: bool,
     /// Directory to write the rendered configure-script into
     #[arg(long, default_value = "./build")]
     pub out: PathBuf,
@@ -215,6 +222,7 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         ssh_pubkey,
         bgp_asn: args.bgp_asn,
         bgp_peer_password: args.bgp_peer_password,
+        allow_password_auth: args.allow_password_auth,
     };
 
     std::fs::create_dir_all(&args.out)?;

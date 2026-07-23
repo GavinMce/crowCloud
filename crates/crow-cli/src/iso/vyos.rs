@@ -31,6 +31,17 @@ pub struct VyosBuildConfig {
     pub ssh_pubkey: String,
     pub bgp_asn: u32,
     pub bgp_peer_password: String,
+    /// Defaults to `false` (key-only, matching the original design).
+    /// Setting `true` skips `disable-password-authentication` -- an
+    /// explicit escape hatch, not a silent fallback: added after a real
+    /// incident where a malformed key commit left a box locked out over
+    /// SSH (VyOS commits config sections somewhat independently, so
+    /// `service ssh`'s disable-password-authentication can succeed even
+    /// when the separate `system login` section containing the new key
+    /// fails in the same commit). Keeping a password fallback available
+    /// while validating key-based access on a given box is a reasonable
+    /// choice, not a security regression to silently prevent.
+    pub allow_password_auth: bool,
 }
 
 pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
@@ -42,13 +53,23 @@ pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
     // login user ... authentication plaintext-password` line. A build
     // with no `ssh_pubkey` is a caller bug, not something this function
     // silently tolerates by falling back to a password.
-    lines.push(
-        "set system login user vyos authentication public-keys admin-key key \
-        '{}'"
-            .replace("{}", &cfg.ssh_pubkey),
-    );
+    //
+    // Confirmed live (commit fails otherwise): VyOS wants `type` and
+    // `key` as separate fields, not the key type left embedded as a
+    // prefix on the `key` value the way the raw pubkey file has it.
+    let mut parts = cfg.ssh_pubkey.split_whitespace();
+    let key_type = parts.next().unwrap_or("ssh-ed25519");
+    let key_data = parts.next().unwrap_or(&cfg.ssh_pubkey);
+    lines.push(format!(
+        "set system login user vyos authentication public-keys admin-key type '{key_type}'"
+    ));
+    lines.push(format!(
+        "set system login user vyos authentication public-keys admin-key key '{key_data}'"
+    ));
     lines.push("set service ssh port '22'".to_string());
-    lines.push("set service ssh disable-password-authentication".to_string());
+    if !cfg.allow_password_auth {
+        lines.push("set service ssh disable-password-authentication".to_string());
+    }
 
     // Uplink
     lines.push(format!(
@@ -169,6 +190,7 @@ mod tests {
             ssh_pubkey: "ssh-ed25519 AAAAtest".into(),
             bgp_asn: 65000,
             bgp_peer_password: "fabric-secret".into(),
+            allow_password_auth: false,
         }
     }
 
@@ -178,6 +200,29 @@ mod tests {
         assert!(out.contains("authentication public-keys"));
         assert!(!out.contains("authentication plaintext-password"));
         assert!(out.contains("disable-password-authentication"));
+    }
+
+    #[test]
+    fn allow_password_auth_skips_the_disable_line() {
+        let mut c = cfg();
+        c.allow_password_auth = true;
+        let out = render_configure_script(&c);
+        assert!(!out.contains("disable-password-authentication"));
+        // The key still gets configured either way -- this is "keep a
+        // fallback available", not "don't bother with the key".
+        assert!(out.contains("admin-key type"));
+    }
+
+    #[test]
+    fn ssh_key_type_and_data_are_separate_fields() {
+        // Confirmed live against a real VyOS commit: embedding the type
+        // as a prefix on `key` (the naive reading of the pubkey file
+        // format) fails with "Missing type for public-key" at commit
+        // time -- `type` must be its own explicit field.
+        let out = render_configure_script(&cfg());
+        assert!(out.contains("admin-key type 'ssh-ed25519'"));
+        assert!(out.contains("admin-key key 'AAAAtest'"));
+        assert!(!out.contains("key 'ssh-ed25519 AAAAtest'"));
     }
 
     #[test]
