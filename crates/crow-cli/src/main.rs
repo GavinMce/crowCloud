@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 mod client;
 mod commands;
 mod config;
+mod iso;
 mod output;
 
 #[derive(Parser)]
@@ -46,6 +47,8 @@ pub enum Commands {
     IpPool(commands::ippool::IpPoolCmd),
     /// Manage VPS tunnel endpoint
     Tunnel(commands::tunnel::TunnelCmd),
+    /// Build pre-baked VyOS/Proxmox installer images (#66)
+    Iso(commands::iso::IsoCmd),
 }
 
 #[tokio::main]

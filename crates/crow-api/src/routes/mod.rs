@@ -4,6 +4,8 @@ use axum::Router;
 mod auth;
 mod domains;
 mod expose;
+mod fleet_secrets;
+mod host_bootstrap;
 mod ip_pools;
 mod projects;
 mod provider_nodes;
@@ -19,4 +21,6 @@ pub fn router() -> Router<AppState> {
         .nest("/ip-pools", ip_pools::router())
         .nest("/expose", expose::router())
         .nest("/domains", domains::router())
+        .nest("/fleet-secrets", fleet_secrets::router())
+        .nest("/internal", host_bootstrap::router())
 }
