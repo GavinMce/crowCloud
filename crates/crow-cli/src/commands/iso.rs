@@ -108,6 +108,11 @@ pub struct ProxmoxBuildArgs {
     pub root_password: String,
     #[arg(long)]
     pub fqdn: String,
+    /// Required by answer.toml's [global] section -- confirmed live
+    /// against proxmox-auto-install-assistant, no default offered since
+    /// there's no sensible one
+    #[arg(long)]
+    pub admin_email: String,
     #[arg(long)]
     pub trunk_interface: String,
     #[arg(long)]
@@ -251,6 +256,7 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
     let cfg = proxmox_iso::ProxmoxBuildConfig {
         root_password_hash,
         fqdn: args.fqdn,
+        admin_email: args.admin_email,
         trunk_interface: args.trunk_interface,
         underlay_vlan: args.underlay_vlan,
         mgmt_vlan: args.mgmt_vlan,

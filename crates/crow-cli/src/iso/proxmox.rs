@@ -1,14 +1,22 @@
 /// Inputs for rendering a Proxmox `answer.toml` (`proxmox-auto-install-assistant`)
 /// and the post-install hook script (#66/#67).
 ///
-/// Field names in the rendered `answer.toml` follow the documented PVE 8+
-/// auto-install format as of this writing; not verified against a live
-/// `proxmox-auto-install-assistant` in this environment (not installed
-/// here), so treat the exact TOML shape as best-effort pending a real
-/// build.
+/// The `answer.toml` shape is confirmed live against a real
+/// `proxmox-auto-install-assistant validate-answer` (v8.3.4, run inside a
+/// throwaway QEMU/Debian VM with Proxmox's own apt repo added) -- not
+/// just documented best-effort. That run caught two real gaps this
+/// struct's fields now cover: `[global].mailto` is required and was
+/// missing entirely, and `--on-first-boot` (the CLI flag bundling the
+/// hook script into the ISO) silently does nothing without an explicit
+/// `[first-boot]\nsource = "from-iso"` section enabling it in the answer
+/// file itself.
 pub struct ProxmoxBuildConfig {
     pub root_password_hash: String,
     pub fqdn: String,
+    /// Required by `answer.toml`'s `[global]` section -- confirmed live
+    /// against `proxmox-auto-install-assistant validate-answer` (8.3.4),
+    /// which rejects the file outright without it.
+    pub admin_email: String,
     pub trunk_interface: String,
     pub underlay_vlan: u16,
     pub mgmt_vlan: u16,
@@ -75,6 +83,7 @@ pub fn render_answer_toml(cfg: &ProxmoxBuildConfig) -> String {
     out.push_str("keyboard = \"en-us\"\n");
     out.push_str("country = \"us\"\n");
     out.push_str(&format!("fqdn = \"{}\"\n", cfg.fqdn));
+    out.push_str(&format!("mailto = \"{}\"\n", cfg.admin_email));
     out.push_str("timezone = \"UTC\"\n");
     out.push_str(&format!(
         "root-password-hashed = \"{}\"\n",
@@ -105,6 +114,16 @@ pub fn render_answer_toml(cfg: &ProxmoxBuildConfig) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     out.push_str(&format!("disk-list = [{disks}]\n"));
+    out.push('\n');
+
+    // Confirmed live: `--on-first-boot` (the CLI flag bundling the hook
+    // script into the ISO) does nothing on its own -- the installed
+    // system won't actually run it without this section explicitly
+    // enabling it. `source = "from-iso"` matches passing the hook via
+    // `--on-first-boot` at prepare-iso time (as opposed to fetching it
+    // over HTTP at first-boot instead).
+    out.push_str("[first-boot]\n");
+    out.push_str("source = \"from-iso\"\n");
 
     out
 }
@@ -267,6 +286,7 @@ mod tests {
         ProxmoxBuildConfig {
             root_password_hash: "$6$hashed$xyz".into(),
             fqdn: "pve1.fleet.local".into(),
+            admin_email: "admin@fleet.local".into(),
             trunk_interface: "eth0".into(),
             underlay_vlan: 10,
             mgmt_vlan: 20,
@@ -291,6 +311,18 @@ mod tests {
         let out = render_answer_toml(&cfg());
         assert!(out.contains("root-password-hashed"));
         assert!(!out.contains("root-password =") || out.contains("root-password-hashed"));
+    }
+
+    #[test]
+    fn answer_toml_includes_mailto_and_enables_first_boot() {
+        // Both confirmed live: `[global].mailto` is a hard requirement
+        // (validate-answer rejects the file without it), and
+        // `[first-boot]` is what actually makes `--on-first-boot` do
+        // anything at all.
+        let out = render_answer_toml(&cfg());
+        assert!(out.contains("mailto = \"admin@fleet.local\""));
+        assert!(out.contains("[first-boot]"));
+        assert!(out.contains("source = \"from-iso\""));
     }
 
     #[test]
