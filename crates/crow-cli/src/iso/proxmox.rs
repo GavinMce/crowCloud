@@ -32,12 +32,6 @@ pub struct ProxmoxBuildConfig {
     pub bgp_peer_password: String,
     pub underlay_prefix: u8,
     pub ospf_area: String,
-    /// VMID of an existing Proxmox template to clone for the seed VM
-    /// (#67) -- deliberately not "download a base cloud image" here.
-    /// Default-template creation is its own scoped-out feature (#40);
-    /// this reuses whatever template convention already exists rather
-    /// than baking in a guessed, unpinned image URL.
-    pub seed_template_vmid: u32,
 }
 
 /// The literal contents of `deploy/bootstrap.sh`, embedded at compile
@@ -216,9 +210,33 @@ HTTP_CODE="$(curl -s -o /tmp/crowcloud-register-response.json -w '%{{http_code}}
 if [ "${{HTTP_CODE}}" = "000" ]; then
     echo "==> No crowCloud instance reachable at ${{CROW_API_URL}} -- self-electing as fleet seed (#67)"
 
-    echo "==> Cloning template {seed_template_vmid} to run crowCloud (guest, not the bare host OS)"
+    # A truly fresh first host has no templates to clone -- unlike
+    # regular VM provisioning (which should reuse whatever template
+    # convention #40 eventually builds), the seed VM's own bootstrap is
+    # inherently a from-nothing case, so it fetches its own base image
+    # directly via Proxmox's own download-url API (the same mechanism
+    # #40 documents for default-template creation) rather than depending
+    # on a template that can't exist yet. Debian 12's official cloud
+    # image is the pinned, curated choice here -- not user-configurable
+    # arbitrary input, matching #40's stated preference for a small
+    # curated catalog over open-ended URLs.
     SEED_VMID="$(pvesh get /cluster/nextid)"
-    qm clone {seed_template_vmid} "${{SEED_VMID}}" --name crowcloud-seed --full
+    SEED_IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+    echo "==> Fetching base image for the seed VM (${{SEED_IMAGE_URL}})"
+    pvesh create /nodes/"${{NODE_NAME}}"/storage/"${{DEFAULT_STORAGE}}"/download-url \
+        --url "${{SEED_IMAGE_URL}}" \
+        --content import \
+        --filename "crowcloud-seed-base.qcow2"
+
+    echo "==> Creating seed VM ${{SEED_VMID}} from that image (guest, not the bare host OS)"
+    qm create "${{SEED_VMID}}" --name crowcloud-seed --memory 4096 --cores 2 \
+        --net0 "virtio,bridge=${{DEFAULT_BRIDGE}}" --scsihw virtio-scsi-pci \
+        --ostype l26
+    qm importdisk "${{SEED_VMID}}" "/var/lib/vz/import/crowcloud-seed-base.qcow2" "${{DEFAULT_STORAGE}}"
+    qm set "${{SEED_VMID}}" --scsi0 "${{DEFAULT_STORAGE}}:vm-${{SEED_VMID}}-disk-0"
+    qm set "${{SEED_VMID}}" --boot c --bootdisk scsi0
+    qm resize "${{SEED_VMID}}" scsi0 +12G
+    qm set "${{SEED_VMID}}" --ide2 "${{DEFAULT_STORAGE}}:cloudinit"
 
     echo "==> Writing cloud-init user-data (runs bootstrap.sh unattended inside the guest)"
     mkdir -p /var/lib/vz/snippets
@@ -228,18 +246,18 @@ CLOUDINIT
 
     qm set "${{SEED_VMID}}" \
         --cicustom "user=local:snippets/crowcloud-seed-${{SEED_VMID}}.yaml" \
-        --ipconfig0 "ip=dhcp" \
-        --net0 "virtio,bridge=${{DEFAULT_BRIDGE}}"
+        --ipconfig0 "ip=dhcp"
     qm start "${{SEED_VMID}}"
 
     # NOTE: this kicks the seed deployment off and returns -- it does not
     # wait for or confirm crowCloud actually comes up inside the guest
-    # (no readiness polling, no retry if `qm clone`/`qm start` fails).
-    # `bootstrap.sh`'s own progress is visible at
-    # /var/log/crowcloud-bootstrap.log *inside* that guest. Assumes
-    # template {seed_template_vmid} already has a cloud-init drive
-    # configured (standard for a Proxmox cloud-init template) -- this
-    # script doesn't add one.
+    # (no readiness polling, no retry if any step above fails). The
+    # exact `pvesh`/`qm` flag names/behavior here are not verified
+    # against a live Proxmox host in this environment (no real PVE
+    # install available to test against, only the auto-install-assistant
+    # tool itself) -- treat this sequence as best-effort pending a real
+    # run. `bootstrap.sh`'s own progress is visible at
+    # /var/log/crowcloud-bootstrap.log *inside* that guest.
     echo "==> VM ${{SEED_VMID}} started -- crowCloud is deploying inside it unattended."
     echo "    Check /var/log/crowcloud-bootstrap.log on that guest, or ${{CROW_API_URL}} once it comes up."
 
@@ -273,7 +291,6 @@ fi
         bgp_peer_password = cfg.bgp_peer_password,
         underlay_prefix = cfg.underlay_prefix,
         ospf_area = cfg.ospf_area,
-        seed_template_vmid = cfg.seed_template_vmid,
         seed_cloud_init = seed_cloud_init,
     )
 }
@@ -302,7 +319,6 @@ mod tests {
             bgp_peer_password: "fabric-secret".into(),
             underlay_prefix: 24,
             ospf_area: "0".into(),
-            seed_template_vmid: 9000,
         }
     }
 
@@ -374,11 +390,15 @@ mod tests {
     }
 
     #[test]
-    fn hook_clones_the_seed_template_not_a_downloaded_image() {
+    fn hook_fetches_the_seed_image_via_proxmox_download_url_api() {
+        // A truly fresh first host has no templates to clone -- the
+        // seed VM must fetch its own base image (via Proxmox's own
+        // download-url API, not crow-cli proxying the download) rather
+        // than assuming a template already exists.
         let out = render_post_install_hook(&cfg());
-        assert!(out.contains("qm clone 9000"));
-        assert!(!out.contains("wget"));
-        assert!(!out.contains("curl -O"));
+        assert!(out.contains("/storage/\"${DEFAULT_STORAGE}\"/download-url"));
+        assert!(out.contains("cloud.debian.org"));
+        assert!(!out.contains("qm clone"));
     }
 
     #[test]
