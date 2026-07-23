@@ -86,11 +86,10 @@ helm "${HELM_ARGS[@]}" --wait
 
 if [ -n "$CROW_FLEET_SECRET" ]; then
   echo "==> Registering fleet secret for automatic host self-registration"
-  # NOTE: CNPG's pod-labeling convention (cnpg.io/cluster) is documented
-  # behavior, not verified live in the environment this was written in
-  # (no `helm` binary available there to stand up a real CNPG cluster and
-  # check). Flagging rather than overclaiming -- if this loop never
-  # finds a pod, that's the first thing to check.
+  # CNPG's pod-labeling convention (cnpg.io/cluster=<name>, role=primary)
+  # verified live against a real CNPG 1-instance Cluster, not just
+  # documented behavior -- confirmed the primary pod carries both
+  # cnpg.io/instanceRole=primary and role=primary.
   PG_CLUSTER="$(kubectl get cluster.postgresql.cnpg.io -n "$NAMESPACE" -o jsonpath='{.items[0].metadata.name}')"
   echo "    waiting for Postgres primary (${PG_CLUSTER})"
   until kubectl get pod -n "$NAMESPACE" -l "cnpg.io/cluster=${PG_CLUSTER},role=primary" 2>/dev/null | grep -q Running; do
