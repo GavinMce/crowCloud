@@ -162,6 +162,12 @@ iface ${{TRUNK_IF}}.${{MGMT_VLAN}} inet static
     gateway ${{MGMT_GATEWAY}}
 IFACES
 
+# Writing to /etc/network/interfaces alone doesn't bring the interface
+# up -- confirmed live (it silently sat absent from `ip a` until this
+# was added). ifup requires the parent link to exist first.
+ip link set dev "${{TRUNK_IF}}" up
+ifup "${{TRUNK_IF}}.${{MGMT_VLAN}}" || true
+
 echo "==> Configuring underlay VLAN (${{TRUNK_IF}}.${{UNDERLAY_VLAN}}) + loopback"
 UNDERLAY_IP="$(ip -4 -o addr show dev "${{TRUNK_IF}}" 2>/dev/null | awk '{{print $4}}' | head -1 || true)"
 # NOTE: this host's own underlay IP isn't determined by this script --
@@ -387,6 +393,15 @@ mod tests {
         // runtime same as everything else read from BGP_PEER_PASSWORD.
         assert!(out.contains(r#"BGP_PEER_PASSWORD="fabric-secret""#));
         assert!(out.contains("neighbor FABRIC password ${BGP_PEER_PASSWORD}"));
+    }
+
+    #[test]
+    fn hook_actually_brings_up_the_management_vlan_interface() {
+        // Confirmed live: writing to /etc/network/interfaces alone
+        // doesn't bring the interface up -- it silently stayed absent
+        // from `ip a` until an explicit ifup was added here.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("ifup \"${TRUNK_IF}.${MGMT_VLAN}\""));
     }
 
     #[test]
