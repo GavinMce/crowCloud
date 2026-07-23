@@ -144,6 +144,11 @@ pub struct ProxmoxBuildArgs {
     pub underlay_prefix: u8,
     #[arg(long, default_value = "0")]
     pub ospf_area: String,
+    /// VMID of an existing Proxmox template to clone if this host
+    /// self-elects as the fleet seed (#67) -- not a base image URL, see
+    /// `ProxmoxBuildConfig::seed_template_vmid`
+    #[arg(long)]
+    pub seed_template_vmid: u32,
     /// A locally-provided Proxmox VE ISO -- never auto-downloaded
     #[arg(long)]
     pub base_iso: Option<PathBuf>,
@@ -261,6 +266,7 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         bgp_peer_password: args.bgp_peer_password,
         underlay_prefix: args.underlay_prefix,
         ospf_area: args.ospf_area,
+        seed_template_vmid: args.seed_template_vmid,
     };
 
     std::fs::create_dir_all(&args.out)?;
