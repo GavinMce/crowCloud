@@ -203,6 +203,13 @@ systemctl restart frr
 
 echo "==> Detecting local Proxmox defaults"
 DEFAULT_STORAGE="$(pvesm status --content images 2>/dev/null | awk 'NR==2{{print $1}}')"
+# Confirmed live: block-based storages that support `images` content
+# (e.g. lvmthin, the common default for VM disks) do NOT support the
+# `import` content type Proxmox's download-url API needs to stage a
+# fetched file -- that requires a file-based storage. These are often
+# two different storages on a stock install, so they need separate
+# detection; the VM's own disk still ends up on DEFAULT_STORAGE below.
+IMPORT_STORAGE="$(pvesm status --content import 2>/dev/null | awk 'NR==2{{print $1}}')"
 DEFAULT_BRIDGE="vmbr0"
 NODE_NAME="$(hostname)"
 MAC_ADDRESS="$(cat /sys/class/net/${{TRUNK_IF}}/address)"
@@ -248,10 +255,15 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
     # image is the pinned, curated choice here -- not user-configurable
     # arbitrary input, matching #40's stated preference for a small
     # curated catalog over open-ended URLs.
+    if [ -z "${{IMPORT_STORAGE}}" ]; then
+        echo "==> No storage supporting the 'import' content type was found -- cannot fetch the seed image" >&2
+        exit 1
+    fi
+
     SEED_VMID="$(pvesh get /cluster/nextid)"
     SEED_IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
-    echo "==> Fetching base image for the seed VM (${{SEED_IMAGE_URL}})"
-    pvesh create /nodes/"${{NODE_NAME}}"/storage/"${{DEFAULT_STORAGE}}"/download-url \
+    echo "==> Fetching base image for the seed VM (${{SEED_IMAGE_URL}}) onto ${{IMPORT_STORAGE}}"
+    pvesh create /nodes/"${{NODE_NAME}}"/storage/"${{IMPORT_STORAGE}}"/download-url \
         --url "${{SEED_IMAGE_URL}}" \
         --content import \
         --filename "crowcloud-seed-base.qcow2"
@@ -264,8 +276,10 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
     # path broke on this host's real (different) storage backend with
     # "couldn't find the crowcloud file". `pvesm path` resolves the
     # actual filesystem path for the volume `download-url` just wrote,
-    # regardless of storage backend.
-    SEED_IMAGE_PATH="$(pvesm path "${{DEFAULT_STORAGE}}:import/crowcloud-seed-base.qcow2")"
+    # regardless of storage backend. The fetched file lives on
+    # IMPORT_STORAGE, but the resulting VM disk is created on
+    # DEFAULT_STORAGE (the storage that actually supports `images`).
+    SEED_IMAGE_PATH="$(pvesm path "${{IMPORT_STORAGE}}:import/crowcloud-seed-base.qcow2")"
     qm importdisk "${{SEED_VMID}}" "${{SEED_IMAGE_PATH}}" "${{DEFAULT_STORAGE}}"
     qm set "${{SEED_VMID}}" --scsi0 "${{DEFAULT_STORAGE}}:vm-${{SEED_VMID}}-disk-0"
     qm set "${{SEED_VMID}}" --boot c --bootdisk scsi0
@@ -466,7 +480,7 @@ mod tests {
         // download-url API, not crow-cli proxying the download) rather
         // than assuming a template already exists.
         let out = render_post_install_hook(&cfg());
-        assert!(out.contains("/storage/\"${DEFAULT_STORAGE}\"/download-url"));
+        assert!(out.contains("/storage/\"${IMPORT_STORAGE}\"/download-url"));
         assert!(out.contains("cloud.debian.org"));
         assert!(!out.contains("qm clone"));
     }
@@ -478,8 +492,25 @@ mod tests {
         // find the crowcloud file" on a host using a different storage
         // backend. `pvesm path` resolves the real path for any backend.
         let out = render_post_install_hook(&cfg());
-        assert!(out.contains(r#"pvesm path "${DEFAULT_STORAGE}:import/crowcloud-seed-base.qcow2""#));
+        assert!(out.contains(r#"pvesm path "${IMPORT_STORAGE}:import/crowcloud-seed-base.qcow2""#));
         assert!(!out.contains("/var/lib/vz/import/"));
+    }
+
+    #[test]
+    fn hook_detects_import_storage_separately_from_images_storage() {
+        // Confirmed live: `download-url --content import` failed with
+        // "can't upload to storage type 'lvmthin', not a file based
+        // storage!" -- the storage that supports `images` content (used
+        // for VM disks, often lvmthin) is frequently NOT the same
+        // storage that supports `import` content (must be file-based).
+        // These need independent detection, and the seed VM's own disk
+        // must still land on the images-capable DEFAULT_STORAGE.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("IMPORT_STORAGE=\"$(pvesm status --content import"));
+        assert!(out.contains("DEFAULT_STORAGE=\"$(pvesm status --content images"));
+        assert!(out
+            .contains(r#"qm importdisk "${SEED_VMID}" "${SEED_IMAGE_PATH}" "${DEFAULT_STORAGE}""#));
+        assert!(out.contains("No storage supporting the 'import' content type"));
     }
 
     #[test]
