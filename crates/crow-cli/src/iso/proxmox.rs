@@ -152,6 +152,15 @@ echo "==> Installing FRR"
 apt-get update
 apt-get install -y frr
 
+echo "==> Bringing up trunk (${{TRUNK_IF}}) at the fabric MTU"
+# Confirmed live: a VLAN subinterface can never exceed its parent's MTU
+# at creation time -- bringing up the mgmt VLAN (below) before the
+# physical trunk was raised to jumbo frames silently capped it at the
+# default 1500, even though its own interfaces stanza said mtu 9000.
+# The trunk's MTU must be set before any VLAN child is created on it.
+ip link set dev "${{TRUNK_IF}}" up
+ip link set dev "${{TRUNK_IF}}" mtu "${{TRUNK_MTU}}"
+
 echo "==> Configuring management VLAN (${{TRUNK_IF}}.${{MGMT_VLAN}})"
 cat >> /etc/network/interfaces <<IFACES
 
@@ -164,9 +173,18 @@ IFACES
 
 # Writing to /etc/network/interfaces alone doesn't bring the interface
 # up -- confirmed live (it silently sat absent from `ip a` until this
-# was added). ifup requires the parent link to exist first.
-ip link set dev "${{TRUNK_IF}}" up
+# was added).
 ifup "${{TRUNK_IF}}.${{MGMT_VLAN}}" || true
+
+# Confirmed live: the installer-time DHCP resolver (on the temporary
+# vmbr0 install network) is stale and unreachable once the mgmt VLAN
+# takes over as the real default route -- DNS lookups (e.g. fetching
+# the seed image below) silently failed until resolv.conf pointed at
+# the fabric's real gateway, which also serves as the DNS forwarder.
+cat > /etc/resolv.conf <<RESOLV
+search fleet.local
+nameserver ${{MGMT_GATEWAY}}
+RESOLV
 
 echo "==> Configuring underlay VLAN (${{TRUNK_IF}}.${{UNDERLAY_VLAN}}) + loopback"
 UNDERLAY_IP="$(ip -4 -o addr show dev "${{TRUNK_IF}}" 2>/dev/null | awk '{{print $4}}' | head -1 || true)"
@@ -175,7 +193,6 @@ UNDERLAY_IP="$(ip -4 -o addr show dev "${{TRUNK_IF}}" 2>/dev/null | awk '{{print
 # allocator makes for the underlay. Left as an explicit gap: the real
 # value needs to come from somewhere (a build-time flag once #54 exists,
 # or a pre-underlay-network DHCP reservation) rather than guessed here.
-ip link set dev "${{TRUNK_IF}}" mtu "${{TRUNK_MTU}}"
 
 echo "==> Configuring FRR (OSPF underlay + BGP EVPN dynamic peer)"
 # Confirmed live: an earlier version of this hook assumed a per-app
@@ -471,6 +488,43 @@ mod tests {
         // from `ip a` until an explicit ifup was added here.
         let out = render_post_install_hook(&cfg());
         assert!(out.contains("ifup \"${TRUNK_IF}.${MGMT_VLAN}\""));
+    }
+
+    #[test]
+    fn hook_raises_the_trunk_mtu_before_creating_any_vlan_child() {
+        // Confirmed live: a VLAN subinterface can never exceed its
+        // parent's MTU at creation time -- bringing up the mgmt VLAN
+        // before the physical trunk was raised to jumbo frames silently
+        // capped it at 1500 despite its own stanza saying mtu 9000.
+        let out = render_post_install_hook(&cfg());
+        let mtu_pos = out
+            .find("ip link set dev \"${TRUNK_IF}\" mtu \"${TRUNK_MTU}\"")
+            .expect("trunk MTU must be set explicitly");
+        let vlan_child_pos = out
+            .find("auto ${TRUNK_IF}.${MGMT_VLAN}")
+            .expect("mgmt VLAN child must be created");
+        assert!(
+            mtu_pos < vlan_child_pos,
+            "trunk MTU must be raised before any VLAN child is created on it"
+        );
+    }
+
+    #[test]
+    fn hook_repoints_resolv_conf_at_the_fabric_gateway() {
+        // Confirmed live: the installer-time DHCP resolver (on the
+        // temporary vmbr0 network) is stale and unreachable once the
+        // mgmt VLAN becomes the real default route -- DNS silently
+        // failed (fetching the seed image below) until this pointed
+        // resolv.conf at the fabric gateway instead.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("cat > /etc/resolv.conf"));
+        assert!(out.contains("nameserver ${MGMT_GATEWAY}"));
+        let resolv_pos = out.find("cat > /etc/resolv.conf").unwrap();
+        let ifup_pos = out.find("ifup \"${TRUNK_IF}.${MGMT_VLAN}\"").unwrap();
+        assert!(
+            ifup_pos < resolv_pos,
+            "resolv.conf must be rewritten after the mgmt VLAN is up, not before"
+        );
     }
 
     #[test]
