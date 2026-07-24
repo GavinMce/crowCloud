@@ -17,7 +17,7 @@ pub enum IsoSubcommand {
     /// Build a pre-baked VyOS image (#66)
     Vyos(VyosCmd),
     /// Build a pre-baked Proxmox VE image (#66)
-    Proxmox(ProxmoxCmd),
+    Proxmox(Box<ProxmoxCmd>),
 }
 
 #[derive(Args)]
@@ -28,7 +28,36 @@ pub struct VyosCmd {
 
 #[derive(Subcommand)]
 pub enum VyosSubcommand {
-    Build(VyosBuildArgs),
+    Build(Box<VyosBuildArgs>),
+    /// Apply a rendered configure.txt to a live VyOS device over SSH
+    /// (#66) -- VyOS has no unattended install mode, so a router still
+    /// needs one interactive `install image` session per box; this
+    /// automates the fabric-config step that comes after that
+    Apply(VyosApplyArgs),
+}
+
+#[derive(Args)]
+pub struct VyosApplyArgs {
+    /// Device management IP or hostname
+    #[arg(long)]
+    pub host: String,
+    #[arg(long, default_value_t = 22)]
+    pub port: u16,
+    #[arg(long, default_value = "vyos")]
+    pub user: String,
+    /// Private key matching the public key baked into the image via
+    /// `iso vyos build --ssh-pubkey` -- this only supports key-based
+    /// auth, matching that command's key-only default
+    #[arg(long)]
+    pub ssh_key: PathBuf,
+    /// Path to a rendered configure.txt (from `iso vyos build`'s `--out`)
+    #[arg(long)]
+    pub script: PathBuf,
+    /// Skip host key verification entirely instead of trust-on-first-use
+    /// (accept-new). Only for throwaway/lab devices -- accept-new still
+    /// catches a host key that unexpectedly changed on a known device
+    #[arg(long)]
+    pub insecure_skip_host_key_check: bool,
 }
 
 #[derive(Args)]
@@ -184,12 +213,38 @@ pub struct ProxmoxBuildArgs {
 pub async fn run(cmd: IsoCmd) -> Result<()> {
     match cmd.command {
         IsoSubcommand::Vyos(vyos_cmd) => match vyos_cmd.command {
-            VyosSubcommand::Build(args) => build_vyos(args),
+            VyosSubcommand::Build(args) => build_vyos(*args),
+            VyosSubcommand::Apply(args) => apply_vyos(args).await,
         },
         IsoSubcommand::Proxmox(proxmox_cmd) => match proxmox_cmd.command {
             ProxmoxSubcommand::Build(args) => build_proxmox(args),
         },
     }
+}
+
+async fn apply_vyos(args: VyosApplyArgs) -> Result<()> {
+    let commands = crate::iso::vyos_apply::read_commands_from_script(&args.script)?;
+    println!(
+        "Applying {} commands from {} to {}@{}:{} ...",
+        commands.len(),
+        args.script.display(),
+        args.user,
+        args.host,
+        args.port
+    );
+
+    let cfg = crate::iso::vyos_apply::VyosApplyConfig {
+        host: args.host,
+        port: args.port,
+        user: args.user,
+        ssh_key: args.ssh_key,
+        commands,
+        strict_host_key_checking: !args.insecure_skip_host_key_check,
+    };
+
+    crate::iso::vyos_apply::apply(&cfg).await?;
+    println!("Applied and saved.");
+    Ok(())
 }
 
 fn build_vyos(args: VyosBuildArgs) -> Result<()> {
