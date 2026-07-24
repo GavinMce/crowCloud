@@ -214,12 +214,26 @@ REGISTER_PAYLOAD=$(cat <<JSON
 JSON
 )
 
+# Confirmed live: `curl ... || echo "000"` is broken -- curl's own
+# -w output already writes "000" on a hard failure (DNS/timeout), *and*
+# curl still exits non-zero in that case, so the `||` fires too,
+# concatenating into the literal string "000000". That fails every
+# string comparison below and falls through to the wrong branch (which
+# then fails again trying to cat a response file curl never wrote,
+# since it never got a reply to write). Capture curl's real exit code
+# separately instead of relying on its -w output alone under `set -e`.
+set +e
 HTTP_CODE="$(curl -s -o /tmp/crowcloud-register-response.json -w '%{{http_code}}' \
   --connect-timeout 5 --max-time 15 \
   -X POST "${{REGISTER_URL}}" \
   -H "X-Fleet-Secret: ${{FLEET_SECRET}}" \
   -H 'Content-Type: application/json' \
-  -d "${{REGISTER_PAYLOAD}}" || echo "000")"
+  -d "${{REGISTER_PAYLOAD}}")"
+CURL_EXIT=$?
+set -e
+if [ "${{CURL_EXIT}}" -ne 0 ]; then
+    HTTP_CODE="000"
+fi
 
 if [ "${{HTTP_CODE}}" = "000" ]; then
     echo "==> No crowCloud instance reachable at ${{CROW_API_URL}} -- self-electing as fleet seed (#67)"
@@ -390,6 +404,20 @@ mod tests {
         let out = render_post_install_hook(&cfg());
         assert!(out.contains(r#"if [ "${HTTP_CODE}" = "000" ]; then"#));
         assert!(out.contains("self-electing as fleet seed"));
+    }
+
+    #[test]
+    fn hook_captures_curl_exit_code_instead_of_relying_on_a_broken_fallback() {
+        // Confirmed live: `curl ... || echo "000"` produces the literal
+        // string "000000" on a hard failure (curl's own -w output
+        // already prints "000", and curl still exits non-zero, so the
+        // `||` fires too) -- breaks the string comparison and falls
+        // through to the wrong branch. Must capture curl's real exit
+        // code separately and normalize HTTP_CODE from that.
+        let out = render_post_install_hook(&cfg());
+        assert!(!out.contains(r#"|| echo "000")""#));
+        assert!(out.contains("CURL_EXIT=$?"));
+        assert!(out.contains(r#"if [ "${CURL_EXIT}" -ne 0 ]; then"#));
     }
 
     #[test]
