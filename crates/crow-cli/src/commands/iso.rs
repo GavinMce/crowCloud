@@ -66,6 +66,13 @@ pub struct VyosBuildArgs {
     pub mgmt_ip: String,
     #[arg(long, default_value_t = 24)]
     pub mgmt_prefix: u8,
+    /// Network address of the mgmt subnet (not this router's own IP)
+    /// -- used for the NAT masquerade and DNS-forwarding allow-from
+    /// rules that give mgmt-VLAN hosts internet egress
+    #[arg(long)]
+    pub mgmt_network: String,
+    #[arg(long, default_value_t = 24)]
+    pub mgmt_network_prefix: u8,
     #[arg(long)]
     pub loopback_ip: String,
     #[arg(long)]
@@ -92,6 +99,13 @@ pub struct VyosBuildArgs {
     /// host's `--bgp-peer-password` (#66)
     #[arg(long)]
     pub bgp_peer_password: String,
+    /// Recursive DNS forwarders for mgmt-VLAN hosts. Not every public
+    /// resolver is reachable from every network (confirmed live: 9.9.9.9
+    /// and 1.1.1.1 both timed out on one real deployment while 8.8.8.8
+    /// worked), so this is overridable rather than a single hardcoded
+    /// default baked in unconditionally
+    #[arg(long, value_delimiter = ',', default_values_t = ["8.8.8.8".to_string(), "8.8.4.4".to_string()])]
+    pub dns_servers: Vec<String>,
     /// Keep SSH password auth enabled alongside the new key, instead of
     /// disabling it. Default is key-only; use this while validating key
     /// access on a given box, since a bad key commit + disabled password
@@ -206,6 +220,8 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         mgmt_vlan: args.mgmt_vlan,
         mgmt_ip: args.mgmt_ip,
         mgmt_prefix: args.mgmt_prefix,
+        mgmt_network: args.mgmt_network,
+        mgmt_network_prefix: args.mgmt_network_prefix,
         loopback_ip: args.loopback_ip,
         uplink_dhcp: args.uplink_dhcp,
         uplink_ip: args.uplink_ip,
@@ -217,6 +233,7 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         ssh_pubkey,
         bgp_asn: args.bgp_asn,
         bgp_peer_password: args.bgp_peer_password,
+        dns_servers: args.dns_servers,
         allow_password_auth: args.allow_password_auth,
     };
 

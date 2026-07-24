@@ -20,6 +20,8 @@ pub struct VyosBuildConfig {
     pub mgmt_vlan: u16,
     pub mgmt_ip: String,
     pub mgmt_prefix: u8,
+    pub mgmt_network: String,
+    pub mgmt_network_prefix: u8,
     pub loopback_ip: String,
     pub uplink_dhcp: bool,
     pub uplink_ip: Option<String>,
@@ -31,6 +33,14 @@ pub struct VyosBuildConfig {
     pub ssh_pubkey: String,
     pub bgp_asn: u32,
     pub bgp_peer_password: String,
+    /// Recursive DNS forwarders the mgmt VLAN's hosts resolve through
+    /// (this router acts as their forwarder -- see `mgmt_network`'s NAT
+    /// rule below for why they need one at all). Confirmed live: not
+    /// every public resolver is reachable from every network -- 9.9.9.9
+    /// and 1.1.1.1 both timed out on the one this was first deployed on
+    /// while 8.8.8.8 worked fine, so this is a configurable list with a
+    /// sensible default rather than a single hardcoded address.
+    pub dns_servers: Vec<String>,
     /// Defaults to `false` (key-only, matching the original design).
     /// Setting `true` skips `disable-password-authentication` -- an
     /// explicit escape hatch, not a silent fallback: added after a real
@@ -122,6 +132,50 @@ pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
         cfg.trunk_interface, cfg.mgmt_vlan, cfg.mgmt_ip, cfg.mgmt_prefix
     ));
 
+    // Confirmed live: a fresh deployment had zero NAT rules configured
+    // at all, so the mgmt VLAN (needed to fetch the seed image, install
+    // packages, etc. during #67's seed election) had no internet egress
+    // whatsoever despite this router itself having a working uplink.
+    // The underlay VLAN deliberately does NOT get this -- it's pure
+    // fabric transport, not meant to reach the internet.
+    lines.push(format!(
+        "set nat source rule 100 outbound-interface name '{}'",
+        cfg.uplink_interface
+    ));
+    lines.push(format!(
+        "set nat source rule 100 source address '{}/{}'",
+        cfg.mgmt_network, cfg.mgmt_network_prefix
+    ));
+    lines.push("set nat source rule 100 translation address 'masquerade'".to_string());
+
+    // Confirmed live: jumbo frames on the trunk (fabric) side meet a
+    // standard 1500-MTU uplink -- without clamping, a remote server can
+    // advertise a large MSS during the TCP handshake and then stall
+    // silently sending oversized segments if any hop along the return
+    // path drops the resulting ICMP "fragmentation needed" message
+    // (a common NAT/PMTUD black hole). Clamping to the uplink's own
+    // path MTU sidesteps needing PMTUD to work at all.
+    lines.push(format!(
+        "set interfaces ethernet {} ip adjust-mss 'clamp-mss-to-pmtu'",
+        cfg.uplink_interface
+    ));
+
+    // Confirmed live: hosts on the mgmt VLAN had no working resolver --
+    // this router forwards DNS for them rather than each host depending
+    // on whatever (often stale or unreachable) resolver it inherited at
+    // install time.
+    lines.push(format!(
+        "set service dns forwarding listen-address '{}'",
+        cfg.mgmt_ip
+    ));
+    lines.push(format!(
+        "set service dns forwarding allow-from '{}/{}'",
+        cfg.mgmt_network, cfg.mgmt_network_prefix
+    ));
+    for server in &cfg.dns_servers {
+        lines.push(format!("set service dns forwarding name-server '{server}'"));
+    }
+
     // Loopback -- VTEP source / BGP router-id
     lines.push(format!(
         "set interfaces loopback lo address '{}/32'",
@@ -179,6 +233,8 @@ mod tests {
             mgmt_vlan: 20,
             mgmt_ip: "10.255.20.1".into(),
             mgmt_prefix: 24,
+            mgmt_network: "10.255.20.0".into(),
+            mgmt_network_prefix: 24,
             loopback_ip: "10.255.0.1".into(),
             uplink_dhcp: false,
             uplink_ip: Some("192.168.1.50".into()),
@@ -190,6 +246,7 @@ mod tests {
             ssh_pubkey: "ssh-ed25519 AAAAtest".into(),
             bgp_asn: 65000,
             bgp_peer_password: "fabric-secret".into(),
+            dns_servers: vec!["8.8.8.8".into(), "8.8.4.4".into()],
             allow_password_auth: false,
         }
     }
@@ -255,6 +312,45 @@ mod tests {
         let out = render_configure_script(&c);
         assert!(out.contains("set interfaces ethernet eth1 address dhcp"));
         assert!(!out.contains("set protocols static route"));
+    }
+
+    #[test]
+    fn nats_the_mgmt_subnet_out_the_uplink_but_not_the_underlay() {
+        // Confirmed live: a fresh deployment had zero NAT rules at all,
+        // so the mgmt VLAN (needed for #67's seed-image fetch, package
+        // installs, self-registration) had no internet egress despite
+        // the router's own uplink working fine.
+        let out = render_configure_script(&cfg());
+        assert!(out.contains("set nat source rule 100 outbound-interface name 'eth1'"));
+        assert!(out.contains("set nat source rule 100 source address '10.255.20.0/24'"));
+        assert!(out.contains("set nat source rule 100 translation address 'masquerade'"));
+        assert!(!out.contains("10.255.10.0/24'\nset nat"));
+    }
+
+    #[test]
+    fn clamps_mss_on_the_uplink_to_avoid_a_pmtud_black_hole() {
+        // Confirmed live: jumbo frames on the trunk meeting a standard
+        // 1500-MTU uplink stalled TCP connections silently (TLS
+        // handshake completed, then hung forever) once a remote server
+        // advertised a large MSS and the resulting ICMP "frag needed"
+        // never made it back through NAT.
+        let out = render_configure_script(&cfg());
+        assert!(out.contains("set interfaces ethernet eth1 ip adjust-mss 'clamp-mss-to-pmtu'"));
+    }
+
+    #[test]
+    fn forwards_dns_for_the_mgmt_subnet_with_configurable_servers() {
+        // Confirmed live: hosts on the mgmt VLAN had no working
+        // resolver at all until this router started forwarding for
+        // them. The server list is configurable (not a single
+        // hardcoded address) because not every public resolver is
+        // reachable from every network -- 9.9.9.9 and 1.1.1.1 both
+        // timed out on the network this was first deployed on.
+        let out = render_configure_script(&cfg());
+        assert!(out.contains("set service dns forwarding listen-address '10.255.20.1'"));
+        assert!(out.contains("set service dns forwarding allow-from '10.255.20.0/24'"));
+        assert!(out.contains("set service dns forwarding name-server '8.8.8.8'"));
+        assert!(out.contains("set service dns forwarding name-server '8.8.4.4'"));
     }
 
     #[test]
