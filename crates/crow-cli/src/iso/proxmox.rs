@@ -178,7 +178,15 @@ UNDERLAY_IP="$(ip -4 -o addr show dev "${{TRUNK_IF}}" 2>/dev/null | awk '{{print
 ip link set dev "${{TRUNK_IF}}" mtu "${{TRUNK_MTU}}"
 
 echo "==> Configuring FRR (OSPF underlay + BGP EVPN dynamic peer)"
-cat > /etc/frr/daemons.conf.d/crowcloud <<FRRCONF
+# Confirmed live: an earlier version of this hook assumed a per-app
+# config-drop-in directory that doesn't exist in real FRR packaging --
+# the actual model is /etc/frr/daemons (which daemons start) plus a
+# single integrated frr.conf (vtysh running-config syntax), assuming the
+# packaged default of `service integrated-vtysh-config` in
+# /etc/frr/vtysh.conf, which this doesn't verify or set explicitly.
+sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
+sed -i 's/^bgpd=no/bgpd=yes/' /etc/frr/daemons
+cat > /etc/frr/frr.conf <<FRRCONF
 router ospf
  network 0.0.0.0/0 area ${{OSPF_AREA}}
 !
@@ -191,7 +199,7 @@ router bgp ${{BGP_ASN}}
  exit-address-family
 !
 FRRCONF
-systemctl enable --now frr
+systemctl restart frr
 
 echo "==> Detecting local Proxmox defaults"
 DEFAULT_STORAGE="$(pvesm status --content images 2>/dev/null | awk 'NR==2{{print $1}}')"
@@ -389,6 +397,19 @@ mod tests {
         let out = render_post_install_hook(&cfg());
         assert!(out.contains("cluster_action.action"));
         assert!(!out.contains("--cluster-mode"));
+    }
+
+    #[test]
+    fn hook_uses_real_frr_config_files_not_a_nonexistent_directory() {
+        // Confirmed live: /etc/frr/daemons.conf.d/ doesn't exist in real
+        // FRR packaging -- the actual model is /etc/frr/daemons (enable
+        // which daemons run) + a single /etc/frr/frr.conf.
+        let out = render_post_install_hook(&cfg());
+        assert!(!out.contains("daemons.conf.d"));
+        assert!(out.contains("sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons"));
+        assert!(out.contains("sed -i 's/^bgpd=no/bgpd=yes/' /etc/frr/daemons"));
+        assert!(out.contains("cat > /etc/frr/frr.conf"));
+        assert!(out.contains("systemctl restart frr"));
     }
 
     #[test]
