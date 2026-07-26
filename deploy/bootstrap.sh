@@ -4,6 +4,12 @@
 # management cluster — e.g. a small VM on your Proxmox box. Once this
 # finishes, open the printed URL, create the admin account, and add that
 # Proxmox host as a Cloud Host from the UI.
+#
+# Also runnable unattended (no repo clone required, no admin account
+# created yet) as part of the seed-election flow (#67) — set
+# CROW_FLEET_SECRET so the freshly-deployed instance immediately accepts
+# self-registration from every other host built with the same secret,
+# without needing an admin to log in and mint one via the UI first.
 set -euo pipefail
 
 CROW_VERSION="${CROW_VERSION:-latest}"
@@ -12,8 +18,13 @@ CROW_VERSION="${CROW_VERSION:-latest}"
 # an ingress controller and DNS pointed at this cluster — neither is set up
 # by this script.
 CROW_DOMAIN="${CROW_DOMAIN:-}"
+# Optional: if set, registered as a valid fleet secret (#65) once
+# crowCloud is up, so hosts self-registering with this secret (#66/#67)
+# work immediately with no manual "create a fleet secret" step.
+CROW_FLEET_SECRET="${CROW_FLEET_SECRET:-}"
 
 NAMESPACE=crow-system
+REPO_URL="https://github.com/GavinMce/crowCloud.git"
 
 echo "==> Checking prerequisites"
 if [ "$(id -u)" -ne 0 ]; then
@@ -26,6 +37,17 @@ for cmd in curl openssl; do
     exit 1
   fi
 done
+
+if [ ! -d "./charts/crowcloud" ]; then
+  echo "==> ./charts/crowcloud not found -- cloning crowCloud to fetch the Helm chart"
+  if ! command -v git >/dev/null 2>&1; then
+    echo "Missing required command: git (needed to fetch the Helm chart outside a repo checkout)" >&2
+    exit 1
+  fi
+  CLONE_DIR="$(mktemp -d)"
+  git clone --depth 1 "$REPO_URL" "$CLONE_DIR"
+  cd "$CLONE_DIR"
+fi
 
 echo "==> Installing K3s (management cluster)"
 curl -sfL https://get.k3s.io | sh -s - \
@@ -61,6 +83,22 @@ else
   HELM_ARGS+=(--set frontend.service.type=NodePort)
 fi
 helm "${HELM_ARGS[@]}" --wait
+
+if [ -n "$CROW_FLEET_SECRET" ]; then
+  echo "==> Registering fleet secret for automatic host self-registration"
+  # CNPG's pod-labeling convention (cnpg.io/cluster=<name>, role=primary)
+  # verified live against a real CNPG 1-instance Cluster, not just
+  # documented behavior -- confirmed the primary pod carries both
+  # cnpg.io/instanceRole=primary and role=primary.
+  PG_CLUSTER="$(kubectl get cluster.postgresql.cnpg.io -n "$NAMESPACE" -o jsonpath='{.items[0].metadata.name}')"
+  echo "    waiting for Postgres primary (${PG_CLUSTER})"
+  until kubectl get pod -n "$NAMESPACE" -l "cnpg.io/cluster=${PG_CLUSTER},role=primary" 2>/dev/null | grep -q Running; do
+    sleep 2
+  done
+  PG_POD="$(kubectl get pod -n "$NAMESPACE" -l "cnpg.io/cluster=${PG_CLUSTER},role=primary" -o jsonpath='{.items[0].metadata.name}')"
+  kubectl exec -n "$NAMESPACE" "$PG_POD" -- psql -U crowcloud -d crowcloud -c \
+    "INSERT INTO fleet_secrets (secret, label) VALUES ('${CROW_FLEET_SECRET}', 'seed-bootstrap') ON CONFLICT (secret) DO NOTHING;"
+fi
 
 echo "==> Resolving the crowCloud URL"
 NODE_IP="$(hostname -I | awk '{print $1}')"
