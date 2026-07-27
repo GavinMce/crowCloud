@@ -9,11 +9,20 @@
 /// script` (or embedded into a `vyos-build` flavor's config-commands
 /// list, if that mechanism accepts the same syntax -- unverified in this
 /// environment, no `vyos-build` toolchain available to test against).
+#[derive(Clone)]
 pub struct VyosBuildConfig {
     pub hostname: String,
     pub trunk_interface: String,
     pub uplink_interface: String,
     pub trunk_mtu: u32,
+    /// Pins the trunk to a fixed speed/duplex instead of auto-negotiation
+    /// -- both fields are required together (VyOS rejects one without
+    /// the other for a fixed-speed config). Confirmed against current
+    /// VyOS docs: `speed` takes one of a fixed set of values (10/100/
+    /// 1000/2500/5000/10000/25000/40000/50000/100000), `duplex` is
+    /// 'full' or 'half'.
+    pub trunk_speed: Option<String>,
+    pub trunk_duplex: Option<String>,
     pub underlay_vlan: u16,
     pub underlay_ip: String,
     pub underlay_prefix: u8,
@@ -119,6 +128,16 @@ pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
         "set interfaces ethernet {} mtu '{}'",
         cfg.trunk_interface, cfg.trunk_mtu
     ));
+    if let (Some(speed), Some(duplex)) = (&cfg.trunk_speed, &cfg.trunk_duplex) {
+        lines.push(format!(
+            "set interfaces ethernet {} speed '{}'",
+            cfg.trunk_interface, speed
+        ));
+        lines.push(format!(
+            "set interfaces ethernet {} duplex '{}'",
+            cfg.trunk_interface, duplex
+        ));
+    }
     lines.push(format!(
         "set interfaces ethernet {} vif {} address '{}/{}'",
         cfg.trunk_interface, cfg.underlay_vlan, cfg.underlay_ip, cfg.underlay_prefix
@@ -227,6 +246,8 @@ mod tests {
             trunk_interface: "eth0".into(),
             uplink_interface: "eth1".into(),
             trunk_mtu: 9000,
+            trunk_speed: None,
+            trunk_duplex: None,
             underlay_vlan: 10,
             underlay_ip: "10.255.10.1".into(),
             underlay_prefix: 24,
@@ -300,6 +321,23 @@ mod tests {
         let out = render_configure_script(&cfg());
         assert!(out.contains("set interfaces ethernet eth0 mtu '9000'"));
         assert!(out.contains("set interfaces ethernet eth0 vif 10 mtu '9000'"));
+    }
+
+    #[test]
+    fn pins_trunk_speed_and_duplex_when_both_given() {
+        let mut c = cfg();
+        c.trunk_speed = Some("1000".into());
+        c.trunk_duplex = Some("full".into());
+        let out = render_configure_script(&c);
+        assert!(out.contains("set interfaces ethernet eth0 speed '1000'"));
+        assert!(out.contains("set interfaces ethernet eth0 duplex 'full'"));
+    }
+
+    #[test]
+    fn omits_speed_and_duplex_when_not_given() {
+        let out = render_configure_script(&cfg());
+        assert!(!out.contains(" speed "));
+        assert!(!out.contains(" duplex "));
     }
 
     #[test]

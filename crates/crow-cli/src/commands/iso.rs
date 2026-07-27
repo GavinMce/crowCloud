@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::Config;
-use crate::iso::{proxmox as proxmox_iso, vyos as vyos_iso};
+use crate::iso::{proxmox as proxmox_iso, vyos as vyos_iso, vyos_flavor as vyos_flavor_iso};
 
 #[derive(Args)]
 pub struct IsoCmd {
@@ -34,6 +34,13 @@ pub enum VyosSubcommand {
     /// needs one interactive `install image` session per box; this
     /// automates the fabric-config step that comes after that
     Apply(VyosApplyArgs),
+    /// Render a vyos-build flavor that bakes fabric config directly
+    /// into a custom VyOS image (#63) -- the resulting ISO configures
+    /// itself on boot, no `iso vyos apply` step needed for a redeploy
+    /// of hardware whose PCI addressing is already known. Still
+    /// doesn't touch the `install image` step itself -- VyOS has no
+    /// unattended install mode regardless of image customization
+    Flavor(Box<VyosFlavorArgs>),
 }
 
 #[derive(Args)]
@@ -61,6 +68,72 @@ pub struct VyosApplyArgs {
 }
 
 #[derive(Args)]
+pub struct VyosFlavorArgs {
+    #[arg(long)]
+    pub hostname: String,
+    /// PCI bus address of the fabric trunk NIC (e.g. 0000:01:00.0),
+    /// read via `readlink -f /sys/class/net/<iface>/device` on the
+    /// target box -- stable across a NIC swap in the same physical
+    /// slot, unlike the kernel-assigned interface name
+    #[arg(long)]
+    pub trunk_pci: String,
+    #[arg(long)]
+    pub uplink_pci: String,
+    #[arg(long, default_value_t = 9000)]
+    pub trunk_mtu: u32,
+    #[arg(long, requires = "trunk_duplex")]
+    pub trunk_speed: Option<String>,
+    #[arg(long, requires = "trunk_speed")]
+    pub trunk_duplex: Option<String>,
+    #[arg(long)]
+    pub underlay_vlan: u16,
+    #[arg(long)]
+    pub underlay_ip: String,
+    #[arg(long, default_value_t = 24)]
+    pub underlay_prefix: u8,
+    #[arg(long)]
+    pub mgmt_vlan: u16,
+    #[arg(long)]
+    pub mgmt_ip: String,
+    #[arg(long, default_value_t = 24)]
+    pub mgmt_prefix: u8,
+    #[arg(long)]
+    pub mgmt_network: String,
+    #[arg(long, default_value_t = 24)]
+    pub mgmt_network_prefix: u8,
+    #[arg(long)]
+    pub loopback_ip: String,
+    #[arg(long)]
+    pub uplink_dhcp: bool,
+    #[arg(long)]
+    pub uplink_ip: Option<String>,
+    #[arg(long)]
+    pub uplink_prefix: Option<u8>,
+    #[arg(long)]
+    pub uplink_gateway: Option<String>,
+    #[arg(long, default_value = "0")]
+    pub ospf_area: String,
+    #[arg(long)]
+    pub underlay_network: String,
+    #[arg(long, default_value_t = 24)]
+    pub underlay_network_prefix: u8,
+    #[arg(long)]
+    pub ssh_pubkey: PathBuf,
+    #[arg(long, default_value_t = 65000)]
+    pub bgp_asn: u32,
+    #[arg(long)]
+    pub bgp_peer_password: String,
+    #[arg(long, value_delimiter = ',', default_values_t = ["8.8.8.8".to_string(), "8.8.4.4".to_string()])]
+    pub dns_servers: Vec<String>,
+    #[arg(long)]
+    pub allow_password_auth: bool,
+    /// Directory to write the rendered fabric-init script, cron entry,
+    /// and vyos-build flavor TOML into
+    #[arg(long, default_value = "./build")]
+    pub out: PathBuf,
+}
+
+#[derive(Args)]
 pub struct ProxmoxCmd {
     #[command(subcommand)]
     pub command: ProxmoxSubcommand,
@@ -83,6 +156,12 @@ pub struct VyosBuildArgs {
     pub uplink_interface: String,
     #[arg(long, default_value_t = 9000)]
     pub trunk_mtu: u32,
+    /// Pin the trunk to a fixed speed instead of auto-negotiation --
+    /// requires --trunk-duplex too
+    #[arg(long, requires = "trunk_duplex")]
+    pub trunk_speed: Option<String>,
+    #[arg(long, requires = "trunk_speed")]
+    pub trunk_duplex: Option<String>,
     #[arg(long)]
     pub underlay_vlan: u16,
     #[arg(long)]
@@ -215,6 +294,7 @@ pub async fn run(cmd: IsoCmd) -> Result<()> {
         IsoSubcommand::Vyos(vyos_cmd) => match vyos_cmd.command {
             VyosSubcommand::Build(args) => build_vyos(*args),
             VyosSubcommand::Apply(args) => apply_vyos(args).await,
+            VyosSubcommand::Flavor(args) => flavor_vyos(*args),
         },
         IsoSubcommand::Proxmox(proxmox_cmd) => match proxmox_cmd.command {
             ProxmoxSubcommand::Build(args) => build_proxmox(args),
@@ -269,6 +349,8 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         trunk_interface: args.trunk_interface,
         uplink_interface: args.uplink_interface,
         trunk_mtu: args.trunk_mtu,
+        trunk_speed: args.trunk_speed,
+        trunk_duplex: args.trunk_duplex,
         underlay_vlan: args.underlay_vlan,
         underlay_ip: args.underlay_ip,
         underlay_prefix: args.underlay_prefix,
@@ -319,6 +401,87 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
          finishing this integration)",
         script_path.display()
     );
+}
+
+fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
+    let ssh_pubkey = std::fs::read_to_string(&args.ssh_pubkey)
+        .with_context(|| format!("reading SSH public key at {}", args.ssh_pubkey.display()))?
+        .trim()
+        .to_string();
+
+    if args.uplink_dhcp {
+        if args.uplink_ip.is_some() || args.uplink_prefix.is_some() || args.uplink_gateway.is_some()
+        {
+            bail!(
+                "--uplink-dhcp is incompatible with --uplink-ip/--uplink-prefix/--uplink-gateway"
+            );
+        }
+    } else if args.uplink_ip.is_none() || args.uplink_prefix.is_none() {
+        bail!("either --uplink-dhcp or both --uplink-ip and --uplink-prefix are required");
+    }
+
+    let cfg = vyos_flavor_iso::VyosFlavorConfig {
+        base: vyos_iso::VyosBuildConfig {
+            hostname: args.hostname,
+            // Ignored by the flavor renderer -- it resolves the real
+            // interface names at boot from trunk_pci/uplink_pci instead.
+            trunk_interface: String::new(),
+            uplink_interface: String::new(),
+            trunk_mtu: args.trunk_mtu,
+            trunk_speed: args.trunk_speed,
+            trunk_duplex: args.trunk_duplex,
+            underlay_vlan: args.underlay_vlan,
+            underlay_ip: args.underlay_ip,
+            underlay_prefix: args.underlay_prefix,
+            mgmt_vlan: args.mgmt_vlan,
+            mgmt_ip: args.mgmt_ip,
+            mgmt_prefix: args.mgmt_prefix,
+            mgmt_network: args.mgmt_network,
+            mgmt_network_prefix: args.mgmt_network_prefix,
+            loopback_ip: args.loopback_ip,
+            uplink_dhcp: args.uplink_dhcp,
+            uplink_ip: args.uplink_ip,
+            uplink_prefix: args.uplink_prefix,
+            uplink_gateway: args.uplink_gateway,
+            ospf_area: args.ospf_area,
+            underlay_network: args.underlay_network,
+            underlay_network_prefix: args.underlay_network_prefix,
+            ssh_pubkey,
+            bgp_asn: args.bgp_asn,
+            bgp_peer_password: args.bgp_peer_password,
+            dns_servers: args.dns_servers,
+            allow_password_auth: args.allow_password_auth,
+        },
+        trunk_pci: args.trunk_pci,
+        uplink_pci: args.uplink_pci,
+    };
+
+    std::fs::create_dir_all(&args.out)?;
+    let script_path = args.out.join("crowcloud-fabric-init.sh");
+    std::fs::write(
+        &script_path,
+        vyos_flavor_iso::render_fabric_init_script(&cfg),
+    )?;
+    let cron_path = args.out.join("crowcloud-fabric-init.cron");
+    std::fs::write(&cron_path, vyos_flavor_iso::render_cron_entry())?;
+    let flavor_path = args.out.join("crowcloud.toml");
+    std::fs::write(&flavor_path, vyos_flavor_iso::render_flavor_toml(&cfg))?;
+
+    println!("Wrote {}", script_path.display());
+    println!("Wrote {}", cron_path.display());
+    println!("Wrote {}", flavor_path.display());
+    println!(
+        "\nTo build the ISO, run (requires Docker with privileged-container support):\n\
+         \n\
+         git clone -b rolling --single-branch https://github.com/vyos/vyos-build\n\
+         cp {flavor} vyos-build/data/build-flavors/crowcloud.toml\n\
+         cd vyos-build\n\
+         docker run --rm -it --privileged -v $(pwd):/vyos -w /vyos vyos/vyos-build:rolling \\\n\
+         \x20 sudo ./build-vyos-image --architecture amd64 --build-by crowcloud crowcloud",
+        flavor = flavor_path.display()
+    );
+
+    Ok(())
 }
 
 fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
