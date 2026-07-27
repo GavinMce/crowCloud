@@ -343,6 +343,14 @@ pub struct ProxmoxBuildArgs {
     /// enough, or every key must match. Only meaningful with --disk-filter
     #[arg(long)]
     pub disk_filter_match: Option<String>,
+    /// Reserve this many GiB on the install disk for the OS, leaving
+    /// the rest genuinely unpartitioned for storage pools created
+    /// later. Omit to consume the whole disk. Especially useful with a
+    /// broad --disk-filter matching every local disk: Proxmox
+    /// auto-picks one for the OS and leaves the rest (plus whatever
+    /// this doesn't use on the chosen disk) untouched
+    #[arg(long)]
+    pub hdsize_gib: Option<f64>,
     #[arg(long)]
     pub zfs_raid: Option<String>,
     /// Where the post-install hook looks for a reachable crowCloud
@@ -1054,6 +1062,21 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
     let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
     let disk_selection =
         resolve_disk_selection(args.disk, args.disk_filter, args.disk_filter_match)?;
+    let hdsize_gib = match args.hdsize_gib {
+        Some(v) => Some(v),
+        None => {
+            if wiz::prompt_bool(
+                None,
+                "Reserve free space on the install disk for storage pools created later, \
+                 instead of consuming the whole disk?",
+                false,
+            )? {
+                Some(wiz::prompt(None, "GiB to reserve for the OS", Some(150.0))?)
+            } else {
+                None
+            }
+        }
+    };
     let crow_api_url = wiz::prompt(
         args.crow_api_url,
         "crowCloud API URL (where the post-install hook checks reachability before self-electing as fleet seed)",
@@ -1123,6 +1146,7 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         mgmt_gateway,
         trunk_mtu,
         disk_selection,
+        hdsize_gib,
         zfs_raid: args.zfs_raid,
         crow_api_url,
         fleet_secret,

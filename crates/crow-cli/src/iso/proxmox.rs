@@ -25,6 +25,23 @@ pub struct ProxmoxBuildConfig {
     pub mgmt_gateway: String,
     pub trunk_mtu: u32,
     pub disk_selection: DiskSelection,
+    /// Reserves free, genuinely unpartitioned space on the install
+    /// disk for storage pools created later, instead of consuming the
+    /// whole disk for the OS -- confirmed against Proxmox's installer
+    /// source (`Proxmox/Sys/Block.pm::partition_bootable_disk`, an
+    /// explicit-end-offset `sgdisk` partition, not thin-provisioned)
+    /// and its own docs ("reserve free space on the hard disk for
+    /// further partitioning after the installation"). GiB. Nested
+    /// under `lvm.hdsize` for ext4 (Proxmox always LVM-backs ext4/xfs
+    /// roots -- there's no `ext4.hdsize`), or `zfs.hdsize` when
+    /// `zfs_raid` is set. Combined with a broad `DiskSelection::Filter`
+    /// matching every local disk, this is what makes "OS on whichever
+    /// disk gets picked, capped small; everything else -- including
+    /// the untouched remainder of that same disk -- left free for
+    /// storage pools" work without needing to identify a specific
+    /// disk by size (which Proxmox's filter mechanism can't match on
+    /// at all -- confirmed, it only ever sees udev string properties).
+    pub hdsize_gib: Option<f64>,
     pub zfs_raid: Option<String>,
     pub crow_api_url: String,
     pub fleet_secret: String,
@@ -132,8 +149,14 @@ pub fn render_answer_toml(cfg: &ProxmoxBuildConfig) -> String {
     if let Some(raid) = &cfg.zfs_raid {
         out.push_str("filesystem = \"zfs\"\n");
         out.push_str(&format!("zfs.raid = \"{raid}\"\n"));
+        if let Some(hdsize) = cfg.hdsize_gib {
+            out.push_str(&format!("zfs.hdsize = {hdsize}\n"));
+        }
     } else {
         out.push_str("filesystem = \"ext4\"\n");
+        if let Some(hdsize) = cfg.hdsize_gib {
+            out.push_str(&format!("lvm.hdsize = {hdsize}\n"));
+        }
     }
     match &cfg.disk_selection {
         DiskSelection::List(disks) => {
@@ -425,6 +448,7 @@ mod tests {
             mgmt_gateway: "10.255.20.1".into(),
             trunk_mtu: 9000,
             disk_selection: DiskSelection::List(vec!["sda".into(), "sdb".into()]),
+            hdsize_gib: None,
             zfs_raid: Some("raid1".into()),
             crow_api_url: "https://crowcloud.fleet.local".into(),
             fleet_secret: "fleet-secret-abc".into(),
@@ -479,6 +503,40 @@ mod tests {
         assert!(out.contains("filter.ID_BUS = \"ata\""));
         assert!(out.contains("filter-match = \"any\""));
         assert!(!out.contains("disk-list"));
+    }
+
+    #[test]
+    fn answer_toml_reserves_hdsize_under_lvm_for_ext4() {
+        // Confirmed against Proxmox's own installer source: ext4/xfs
+        // are always LVM-backed under the hood, so there's no
+        // `ext4.hdsize` -- it's `lvm.hdsize`. Combined with a broad
+        // disk filter, this is what reserves space on whichever disk
+        // gets auto-picked for storage pools created after install,
+        // without needing to identify a specific disk by size (which
+        // Proxmox's filter mechanism can't match on at all).
+        let mut c = cfg();
+        c.zfs_raid = None;
+        c.hdsize_gib = Some(150.0);
+        let out = render_answer_toml(&c);
+        assert!(out.contains("filesystem = \"ext4\""));
+        assert!(out.contains("lvm.hdsize = 150"));
+        assert!(!out.contains("zfs.hdsize"));
+    }
+
+    #[test]
+    fn answer_toml_reserves_hdsize_under_zfs_when_zfs_raid_is_set() {
+        let mut c = cfg();
+        c.hdsize_gib = Some(200.0);
+        let out = render_answer_toml(&c);
+        assert!(out.contains("filesystem = \"zfs\""));
+        assert!(out.contains("zfs.hdsize = 200"));
+        assert!(!out.contains("lvm.hdsize"));
+    }
+
+    #[test]
+    fn answer_toml_omits_hdsize_when_not_given() {
+        let out = render_answer_toml(&cfg());
+        assert!(!out.contains("hdsize"));
     }
 
     #[test]
