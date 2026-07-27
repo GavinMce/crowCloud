@@ -3,10 +3,27 @@ name = "crow-cli"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
+description = "CLI for crowCloud, a self-hosted multi-provider cloud platform"
 
 [[bin]]
 name = "crow"
 path = "src/main.rs"
+
+[package.metadata.deb]
+name = "crow-cli"
+maintainer = "Gavin <gmcellistrem@gmail.com>"
+copyright = "2026, Gavin <gmcellistrem@gmail.com>"
+extended-description = """\
+crowCloud CLI -- provision and manage VMs, Kubernetes clusters, object \
+storage, and databases across multiple providers (Proxmox, Hetzner, ...) \
+through crowCloud's REST API."""
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/crow", "usr/bin/", "755"],
+]
 
 [dependencies]
 tokio.workspace = true

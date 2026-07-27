@@ -64,15 +64,19 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             cross: false
+            deb: true
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             cross: true
+            deb: true
           - os: macos-14
             target: x86_64-apple-darwin
             cross: false
+            deb: false
           - os: macos-14
             target: aarch64-apple-darwin
             cross: false
+            deb: false
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -93,6 +97,24 @@ jobs:
           else
             cargo build --release --bin crow --target ${{ matrix.target }}
           fi
+
+      - name: Install cargo-deb
+        if: matrix.deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build .deb
+        if: matrix.deb
+        run: cargo deb -p crow-cli --no-build --target ${{ matrix.target }}
+
+      - name: Archive .deb
+        if: matrix.deb
+        run: cp target/debian/*.deb ${{ github.workspace }}/
+
+      - uses: actions/upload-artifact@v7
+        if: matrix.deb
+        with:
+          name: crow-deb-${{ matrix.target }}
+          path: "*.deb"
 
       - name: Archive
         run: |
