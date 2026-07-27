@@ -65,19 +65,38 @@ pub struct VyosCmd {
 
 #[derive(Subcommand)]
 pub enum VyosSubcommand {
-    Build(Box<VyosBuildArgs>),
+    /// Render fabric config, either as a one-shot script or baked into
+    /// a custom image (#66)
+    Build(VyosBuildCmd),
     /// Apply a rendered configure.txt to a live VyOS device over SSH
     /// (#66) -- VyOS has no unattended install mode, so a router still
     /// needs one interactive `install image` session per box; this
     /// automates the fabric-config step that comes after that
     Apply(VyosApplyArgs),
-    /// Render a vyos-build flavor that bakes fabric config directly
-    /// into a custom VyOS image (#63) -- the resulting ISO configures
-    /// itself on boot, no `iso vyos apply` step needed for a redeploy
-    /// of hardware whose PCI addressing is already known. Still
-    /// doesn't touch the `install image` step itself -- VyOS has no
-    /// unattended install mode regardless of image customization
-    Flavor(Box<VyosFlavorArgs>),
+}
+
+#[derive(Args)]
+pub struct VyosBuildCmd {
+    #[command(subcommand)]
+    pub command: VyosBuildSubcommand,
+}
+
+#[derive(Subcommand)]
+pub enum VyosBuildSubcommand {
+    /// Render configure.txt -- a one-shot script meant to be applied
+    /// to an already-installed, already-running VyOS box (by hand, or
+    /// via `iso vyos apply`). Interfaces are identified by static
+    /// kernel-assigned name
+    Config(Box<VyosBuildArgs>),
+    /// Render the inputs to bake a custom, self-configuring VyOS image
+    /// via vyos-build (#63) -- once flashed, the box applies its
+    /// fabric config on every boot with no `iso vyos apply` step
+    /// needed afterward. Interfaces are identified by PCI bus address
+    /// instead of kernel name, resolved dynamically at boot, so it
+    /// survives a NIC swap. Neither this nor `config` touches VyOS's
+    /// own `install image` step -- there's no unattended install mode
+    /// regardless of image customization
+    Image(Box<VyosFlavorArgs>),
 }
 
 #[derive(Args)]
@@ -346,9 +365,11 @@ pub struct ProxmoxBuildArgs {
 pub async fn run(cmd: IsoCmd) -> Result<()> {
     match cmd.command {
         IsoSubcommand::Vyos(vyos_cmd) => match vyos_cmd.command {
-            VyosSubcommand::Build(args) => build_vyos(*args),
+            VyosSubcommand::Build(build_cmd) => match build_cmd.command {
+                VyosBuildSubcommand::Config(args) => build_vyos(*args),
+                VyosBuildSubcommand::Image(args) => flavor_vyos(*args),
+            },
             VyosSubcommand::Apply(args) => apply_vyos(args).await,
-            VyosSubcommand::Flavor(args) => flavor_vyos(*args),
         },
         IsoSubcommand::Proxmox(proxmox_cmd) => match proxmox_cmd.command {
             ProxmoxSubcommand::Build(args) => build_proxmox(args),
