@@ -24,3 +24,4 @@ clap.workspace = true
 tabled = "0.21"
 dirs = "6"
 rpassword = "7"
+dialoguer = "0.11"

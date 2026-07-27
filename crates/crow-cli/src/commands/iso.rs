@@ -70,63 +70,63 @@ pub struct VyosApplyArgs {
 #[derive(Args)]
 pub struct VyosFlavorArgs {
     #[arg(long)]
-    pub hostname: String,
+    pub hostname: Option<String>,
     /// PCI bus address of the fabric trunk NIC (e.g. 0000:01:00.0),
     /// read via `readlink -f /sys/class/net/<iface>/device` on the
     /// target box -- stable across a NIC swap in the same physical
     /// slot, unlike the kernel-assigned interface name
     #[arg(long)]
-    pub trunk_pci: String,
+    pub trunk_pci: Option<String>,
     #[arg(long)]
-    pub uplink_pci: String,
-    #[arg(long, default_value_t = 9000)]
-    pub trunk_mtu: u32,
+    pub uplink_pci: Option<String>,
+    #[arg(long)]
+    pub trunk_mtu: Option<u32>,
     #[arg(long, requires = "trunk_duplex")]
     pub trunk_speed: Option<String>,
     #[arg(long, requires = "trunk_speed")]
     pub trunk_duplex: Option<String>,
     #[arg(long)]
-    pub underlay_vlan: u16,
+    pub underlay_vlan: Option<u16>,
     #[arg(long)]
-    pub underlay_ip: String,
-    #[arg(long, default_value_t = 24)]
-    pub underlay_prefix: u8,
+    pub underlay_ip: Option<String>,
     #[arg(long)]
-    pub mgmt_vlan: u16,
+    pub underlay_prefix: Option<u8>,
     #[arg(long)]
-    pub mgmt_ip: String,
-    #[arg(long, default_value_t = 24)]
-    pub mgmt_prefix: u8,
+    pub mgmt_vlan: Option<u16>,
     #[arg(long)]
-    pub mgmt_network: String,
-    #[arg(long, default_value_t = 24)]
-    pub mgmt_network_prefix: u8,
+    pub mgmt_ip: Option<String>,
     #[arg(long)]
-    pub loopback_ip: String,
+    pub mgmt_prefix: Option<u8>,
     #[arg(long)]
-    pub uplink_dhcp: bool,
+    pub mgmt_network: Option<String>,
+    #[arg(long)]
+    pub mgmt_network_prefix: Option<u8>,
+    #[arg(long)]
+    pub loopback_ip: Option<String>,
+    #[arg(long)]
+    pub uplink_dhcp: Option<bool>,
     #[arg(long)]
     pub uplink_ip: Option<String>,
     #[arg(long)]
     pub uplink_prefix: Option<u8>,
     #[arg(long)]
     pub uplink_gateway: Option<String>,
-    #[arg(long, default_value = "0")]
-    pub ospf_area: String,
     #[arg(long)]
-    pub underlay_network: String,
-    #[arg(long, default_value_t = 24)]
-    pub underlay_network_prefix: u8,
+    pub ospf_area: Option<String>,
     #[arg(long)]
-    pub ssh_pubkey: PathBuf,
-    #[arg(long, default_value_t = 65000)]
-    pub bgp_asn: u32,
+    pub underlay_network: Option<String>,
     #[arg(long)]
-    pub bgp_peer_password: String,
-    #[arg(long, value_delimiter = ',', default_values_t = ["8.8.8.8".to_string(), "8.8.4.4".to_string()])]
-    pub dns_servers: Vec<String>,
+    pub underlay_network_prefix: Option<u8>,
     #[arg(long)]
-    pub allow_password_auth: bool,
+    pub ssh_pubkey: Option<PathBuf>,
+    #[arg(long)]
+    pub bgp_asn: Option<u32>,
+    #[arg(long)]
+    pub bgp_peer_password: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub dns_servers: Option<Vec<String>>,
+    #[arg(long)]
+    pub allow_password_auth: Option<bool>,
     /// Directory to write the rendered fabric-init script, cron entry,
     /// and vyos-build flavor TOML into
     #[arg(long, default_value = "./build")]
@@ -144,18 +144,23 @@ pub enum ProxmoxSubcommand {
     Build(ProxmoxBuildArgs),
 }
 
+/// Every field without a sensible fallback is `Option` -- omitted on
+/// the command line, it's prompted for interactively instead of clap
+/// erroring "required argument missing". Running with zero flags is a
+/// full wizard walkthrough; running with every flag is unchanged from
+/// before interactive mode existed (#66).
 #[derive(Args)]
 pub struct VyosBuildArgs {
     #[arg(long)]
-    pub hostname: String,
+    pub hostname: Option<String>,
     /// Physical NIC carrying the tagged trunk to the switch (underlay + management VLANs)
     #[arg(long)]
-    pub trunk_interface: String,
+    pub trunk_interface: Option<String>,
     /// Physical NIC used for internet/LAN uplink
     #[arg(long)]
-    pub uplink_interface: String,
-    #[arg(long, default_value_t = 9000)]
-    pub trunk_mtu: u32,
+    pub uplink_interface: Option<String>,
+    #[arg(long)]
+    pub trunk_mtu: Option<u32>,
     /// Pin the trunk to a fixed speed instead of auto-negotiation --
     /// requires --trunk-duplex too
     #[arg(long, requires = "trunk_duplex")]
@@ -163,64 +168,64 @@ pub struct VyosBuildArgs {
     #[arg(long, requires = "trunk_speed")]
     pub trunk_duplex: Option<String>,
     #[arg(long)]
-    pub underlay_vlan: u16,
+    pub underlay_vlan: Option<u16>,
     #[arg(long)]
-    pub underlay_ip: String,
-    #[arg(long, default_value_t = 24)]
-    pub underlay_prefix: u8,
+    pub underlay_ip: Option<String>,
     #[arg(long)]
-    pub mgmt_vlan: u16,
+    pub underlay_prefix: Option<u8>,
     #[arg(long)]
-    pub mgmt_ip: String,
-    #[arg(long, default_value_t = 24)]
-    pub mgmt_prefix: u8,
+    pub mgmt_vlan: Option<u16>,
+    #[arg(long)]
+    pub mgmt_ip: Option<String>,
+    #[arg(long)]
+    pub mgmt_prefix: Option<u8>,
     /// Network address of the mgmt subnet (not this router's own IP)
     /// -- used for the NAT masquerade and DNS-forwarding allow-from
     /// rules that give mgmt-VLAN hosts internet egress
     #[arg(long)]
-    pub mgmt_network: String,
-    #[arg(long, default_value_t = 24)]
-    pub mgmt_network_prefix: u8,
+    pub mgmt_network: Option<String>,
     #[arg(long)]
-    pub loopback_ip: String,
+    pub mgmt_network_prefix: Option<u8>,
     #[arg(long)]
-    pub uplink_dhcp: bool,
+    pub loopback_ip: Option<String>,
+    #[arg(long)]
+    pub uplink_dhcp: Option<bool>,
     #[arg(long)]
     pub uplink_ip: Option<String>,
     #[arg(long)]
     pub uplink_prefix: Option<u8>,
     #[arg(long)]
     pub uplink_gateway: Option<String>,
-    #[arg(long, default_value = "0")]
-    pub ospf_area: String,
     #[arg(long)]
-    pub underlay_network: String,
-    #[arg(long, default_value_t = 24)]
-    pub underlay_network_prefix: u8,
+    pub ospf_area: Option<String>,
+    #[arg(long)]
+    pub underlay_network: Option<String>,
+    #[arg(long)]
+    pub underlay_network_prefix: Option<u8>,
     /// Path to a public key file -- image is built SSH-key-only, never
     /// with a baked password
     #[arg(long)]
-    pub ssh_pubkey: PathBuf,
-    #[arg(long, default_value_t = 65000)]
-    pub bgp_asn: u32,
+    pub ssh_pubkey: Option<PathBuf>,
+    #[arg(long)]
+    pub bgp_asn: Option<u32>,
     /// Shared secret for BGP peer-group auth -- must match every Proxmox
     /// host's `--bgp-peer-password` (#66)
     #[arg(long)]
-    pub bgp_peer_password: String,
+    pub bgp_peer_password: Option<String>,
     /// Recursive DNS forwarders for mgmt-VLAN hosts. Not every public
     /// resolver is reachable from every network (confirmed live: 9.9.9.9
     /// and 1.1.1.1 both timed out on one real deployment while 8.8.8.8
     /// worked), so this is overridable rather than a single hardcoded
     /// default baked in unconditionally
-    #[arg(long, value_delimiter = ',', default_values_t = ["8.8.8.8".to_string(), "8.8.4.4".to_string()])]
-    pub dns_servers: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub dns_servers: Option<Vec<String>>,
     /// Keep SSH password auth enabled alongside the new key, instead of
     /// disabling it. Default is key-only; use this while validating key
     /// access on a given box, since a bad key commit + disabled password
     /// auth means an SSH lockout with no fallback (see #66's incident
     /// notes)
     #[arg(long)]
-    pub allow_password_auth: bool,
+    pub allow_password_auth: Option<bool>,
     /// Directory to write the rendered configure-script into
     #[arg(long, default_value = "./build")]
     pub out: PathBuf,
@@ -328,50 +333,149 @@ async fn apply_vyos(args: VyosApplyArgs) -> Result<()> {
 }
 
 fn build_vyos(args: VyosBuildArgs) -> Result<()> {
-    let ssh_pubkey = std::fs::read_to_string(&args.ssh_pubkey)
-        .with_context(|| format!("reading SSH public key at {}", args.ssh_pubkey.display()))?
-        .trim()
-        .to_string();
+    use crate::iso::vyos_wizard as wiz;
 
-    if args.uplink_dhcp {
+    let hostname = wiz::prompt(args.hostname, "Hostname", None)?;
+    let trunk_interface = wiz::prompt(
+        args.trunk_interface,
+        "Trunk interface (fabric NIC, e.g. eth1)",
+        None,
+    )?;
+    let uplink_interface = wiz::prompt(
+        args.uplink_interface,
+        "Uplink interface (internet/LAN NIC, e.g. eth2)",
+        None,
+    )?;
+    let trunk_mtu = wiz::prompt(args.trunk_mtu, "Trunk MTU", Some(9000))?;
+
+    let (trunk_speed, trunk_duplex) = match (args.trunk_speed, args.trunk_duplex) {
+        (Some(s), Some(d)) => (Some(s), Some(d)),
+        _ => {
+            if wiz::prompt_bool(
+                None,
+                "Pin the trunk to a fixed speed instead of auto-negotiation?",
+                false,
+            )? {
+                (
+                    Some(wiz::prompt(
+                        None,
+                        "Trunk speed (10/100/1000/2500/5000/10000/...)",
+                        Some("1000".to_string()),
+                    )?),
+                    Some(wiz::prompt(
+                        None,
+                        "Trunk duplex (full/half)",
+                        Some("full".to_string()),
+                    )?),
+                )
+            } else {
+                (None, None)
+            }
+        }
+    };
+
+    let underlay_vlan = wiz::prompt(args.underlay_vlan, "Underlay VLAN ID", None)?;
+    let underlay_ip = wiz::prompt(
+        args.underlay_ip,
+        "Underlay loopback-facing IP (this router's own)",
+        None,
+    )?;
+    let underlay_prefix = wiz::prompt(args.underlay_prefix, "Underlay prefix length", Some(24))?;
+    let mgmt_vlan = wiz::prompt(args.mgmt_vlan, "Management VLAN ID", None)?;
+    let mgmt_ip = wiz::prompt(args.mgmt_ip, "Management IP (this router's own)", None)?;
+    let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
+    let mgmt_network = wiz::prompt(
+        args.mgmt_network,
+        "Management subnet network address (not this router's own IP)",
+        None,
+    )?;
+    let mgmt_network_prefix = wiz::prompt(
+        args.mgmt_network_prefix,
+        "Management subnet prefix length",
+        Some(24),
+    )?;
+    let loopback_ip = wiz::prompt(
+        args.loopback_ip,
+        "Loopback IP (VTEP source / BGP router-id)",
+        None,
+    )?;
+
+    let uplink_dhcp = wiz::prompt_bool(args.uplink_dhcp, "Use DHCP for the uplink?", false)?;
+    let (uplink_ip, uplink_prefix, uplink_gateway) = if uplink_dhcp {
         if args.uplink_ip.is_some() || args.uplink_prefix.is_some() || args.uplink_gateway.is_some()
         {
             bail!(
                 "--uplink-dhcp is incompatible with --uplink-ip/--uplink-prefix/--uplink-gateway"
             );
         }
-    } else if args.uplink_ip.is_none() || args.uplink_prefix.is_none() {
-        bail!("either --uplink-dhcp or both --uplink-ip and --uplink-prefix are required");
-    }
+        (None, None, None)
+    } else {
+        (
+            Some(wiz::prompt(args.uplink_ip, "Uplink IP", None)?),
+            Some(wiz::prompt(
+                args.uplink_prefix,
+                "Uplink prefix length",
+                Some(24),
+            )?),
+            wiz::prompt_optional(args.uplink_gateway, "Uplink gateway")?,
+        )
+    };
+
+    let ospf_area = wiz::prompt(args.ospf_area, "OSPF area", Some("0".to_string()))?;
+    let underlay_network = wiz::prompt(args.underlay_network, "Underlay network address", None)?;
+    let underlay_network_prefix = wiz::prompt(
+        args.underlay_network_prefix,
+        "Underlay network prefix length",
+        Some(24),
+    )?;
+
+    let ssh_pubkey_path = wiz::prompt_path(args.ssh_pubkey, "Path to SSH public key file")?;
+    let ssh_pubkey = std::fs::read_to_string(&ssh_pubkey_path)
+        .with_context(|| format!("reading SSH public key at {}", ssh_pubkey_path.display()))?
+        .trim()
+        .to_string();
+
+    let bgp_asn = wiz::prompt(args.bgp_asn, "BGP ASN", Some(65000))?;
+    let bgp_peer_password = wiz::prompt_secret(args.bgp_peer_password, "BGP peer-group password")?;
+    let dns_servers = wiz::prompt_list(
+        args.dns_servers,
+        "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
+        &["8.8.8.8".to_string(), "8.8.4.4".to_string()],
+    )?;
+    let allow_password_auth = wiz::prompt_bool(
+        args.allow_password_auth,
+        "Keep SSH password auth enabled alongside the key? (recovery fallback, not the default)",
+        false,
+    )?;
 
     let cfg = vyos_iso::VyosBuildConfig {
-        hostname: args.hostname,
-        trunk_interface: args.trunk_interface,
-        uplink_interface: args.uplink_interface,
-        trunk_mtu: args.trunk_mtu,
-        trunk_speed: args.trunk_speed,
-        trunk_duplex: args.trunk_duplex,
-        underlay_vlan: args.underlay_vlan,
-        underlay_ip: args.underlay_ip,
-        underlay_prefix: args.underlay_prefix,
-        mgmt_vlan: args.mgmt_vlan,
-        mgmt_ip: args.mgmt_ip,
-        mgmt_prefix: args.mgmt_prefix,
-        mgmt_network: args.mgmt_network,
-        mgmt_network_prefix: args.mgmt_network_prefix,
-        loopback_ip: args.loopback_ip,
-        uplink_dhcp: args.uplink_dhcp,
-        uplink_ip: args.uplink_ip,
-        uplink_prefix: args.uplink_prefix,
-        uplink_gateway: args.uplink_gateway,
-        ospf_area: args.ospf_area,
-        underlay_network: args.underlay_network,
-        underlay_network_prefix: args.underlay_network_prefix,
+        hostname,
+        trunk_interface,
+        uplink_interface,
+        trunk_mtu,
+        trunk_speed,
+        trunk_duplex,
+        underlay_vlan,
+        underlay_ip,
+        underlay_prefix,
+        mgmt_vlan,
+        mgmt_ip,
+        mgmt_prefix,
+        mgmt_network,
+        mgmt_network_prefix,
+        loopback_ip,
+        uplink_dhcp,
+        uplink_ip,
+        uplink_prefix,
+        uplink_gateway,
+        ospf_area,
+        underlay_network,
+        underlay_network_prefix,
         ssh_pubkey,
-        bgp_asn: args.bgp_asn,
-        bgp_peer_password: args.bgp_peer_password,
-        dns_servers: args.dns_servers,
-        allow_password_auth: args.allow_password_auth,
+        bgp_asn,
+        bgp_peer_password,
+        dns_servers,
+        allow_password_auth,
     };
 
     std::fs::create_dir_all(&args.out)?;
@@ -404,56 +508,151 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
 }
 
 fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
-    let ssh_pubkey = std::fs::read_to_string(&args.ssh_pubkey)
-        .with_context(|| format!("reading SSH public key at {}", args.ssh_pubkey.display()))?
-        .trim()
-        .to_string();
+    use crate::iso::vyos_wizard as wiz;
 
-    if args.uplink_dhcp {
+    let hostname = wiz::prompt(args.hostname, "Hostname", None)?;
+    let trunk_pci = wiz::prompt(
+        args.trunk_pci,
+        "Trunk NIC PCI bus address (e.g. 0000:01:00.0 -- readlink -f /sys/class/net/<iface>/device on the target box)",
+        None,
+    )?;
+    let uplink_pci = wiz::prompt(args.uplink_pci, "Uplink NIC PCI bus address", None)?;
+    let trunk_mtu = wiz::prompt(args.trunk_mtu, "Trunk MTU", Some(9000))?;
+
+    let (trunk_speed, trunk_duplex) = match (args.trunk_speed, args.trunk_duplex) {
+        (Some(s), Some(d)) => (Some(s), Some(d)),
+        _ => {
+            if wiz::prompt_bool(
+                None,
+                "Pin the trunk to a fixed speed instead of auto-negotiation?",
+                false,
+            )? {
+                (
+                    Some(wiz::prompt(
+                        None,
+                        "Trunk speed (10/100/1000/2500/5000/10000/...)",
+                        Some("1000".to_string()),
+                    )?),
+                    Some(wiz::prompt(
+                        None,
+                        "Trunk duplex (full/half)",
+                        Some("full".to_string()),
+                    )?),
+                )
+            } else {
+                (None, None)
+            }
+        }
+    };
+
+    let underlay_vlan = wiz::prompt(args.underlay_vlan, "Underlay VLAN ID", None)?;
+    let underlay_ip = wiz::prompt(
+        args.underlay_ip,
+        "Underlay loopback-facing IP (this router's own)",
+        None,
+    )?;
+    let underlay_prefix = wiz::prompt(args.underlay_prefix, "Underlay prefix length", Some(24))?;
+    let mgmt_vlan = wiz::prompt(args.mgmt_vlan, "Management VLAN ID", None)?;
+    let mgmt_ip = wiz::prompt(args.mgmt_ip, "Management IP (this router's own)", None)?;
+    let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
+    let mgmt_network = wiz::prompt(
+        args.mgmt_network,
+        "Management subnet network address (not this router's own IP)",
+        None,
+    )?;
+    let mgmt_network_prefix = wiz::prompt(
+        args.mgmt_network_prefix,
+        "Management subnet prefix length",
+        Some(24),
+    )?;
+    let loopback_ip = wiz::prompt(
+        args.loopback_ip,
+        "Loopback IP (VTEP source / BGP router-id)",
+        None,
+    )?;
+
+    let uplink_dhcp = wiz::prompt_bool(args.uplink_dhcp, "Use DHCP for the uplink?", false)?;
+    let (uplink_ip, uplink_prefix, uplink_gateway) = if uplink_dhcp {
         if args.uplink_ip.is_some() || args.uplink_prefix.is_some() || args.uplink_gateway.is_some()
         {
             bail!(
                 "--uplink-dhcp is incompatible with --uplink-ip/--uplink-prefix/--uplink-gateway"
             );
         }
-    } else if args.uplink_ip.is_none() || args.uplink_prefix.is_none() {
-        bail!("either --uplink-dhcp or both --uplink-ip and --uplink-prefix are required");
-    }
+        (None, None, None)
+    } else {
+        (
+            Some(wiz::prompt(args.uplink_ip, "Uplink IP", None)?),
+            Some(wiz::prompt(
+                args.uplink_prefix,
+                "Uplink prefix length",
+                Some(24),
+            )?),
+            wiz::prompt_optional(args.uplink_gateway, "Uplink gateway")?,
+        )
+    };
+
+    let ospf_area = wiz::prompt(args.ospf_area, "OSPF area", Some("0".to_string()))?;
+    let underlay_network = wiz::prompt(args.underlay_network, "Underlay network address", None)?;
+    let underlay_network_prefix = wiz::prompt(
+        args.underlay_network_prefix,
+        "Underlay network prefix length",
+        Some(24),
+    )?;
+
+    let ssh_pubkey_path = wiz::prompt_path(args.ssh_pubkey, "Path to SSH public key file")?;
+    let ssh_pubkey = std::fs::read_to_string(&ssh_pubkey_path)
+        .with_context(|| format!("reading SSH public key at {}", ssh_pubkey_path.display()))?
+        .trim()
+        .to_string();
+
+    let bgp_asn = wiz::prompt(args.bgp_asn, "BGP ASN", Some(65000))?;
+    let bgp_peer_password = wiz::prompt_secret(args.bgp_peer_password, "BGP peer-group password")?;
+    let dns_servers = wiz::prompt_list(
+        args.dns_servers,
+        "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
+        &["8.8.8.8".to_string(), "8.8.4.4".to_string()],
+    )?;
+    let allow_password_auth = wiz::prompt_bool(
+        args.allow_password_auth,
+        "Keep SSH password auth enabled alongside the key? (recovery fallback, not the default)",
+        false,
+    )?;
 
     let cfg = vyos_flavor_iso::VyosFlavorConfig {
         base: vyos_iso::VyosBuildConfig {
-            hostname: args.hostname,
+            hostname,
             // Ignored by the flavor renderer -- it resolves the real
             // interface names at boot from trunk_pci/uplink_pci instead.
             trunk_interface: String::new(),
             uplink_interface: String::new(),
-            trunk_mtu: args.trunk_mtu,
-            trunk_speed: args.trunk_speed,
-            trunk_duplex: args.trunk_duplex,
-            underlay_vlan: args.underlay_vlan,
-            underlay_ip: args.underlay_ip,
-            underlay_prefix: args.underlay_prefix,
-            mgmt_vlan: args.mgmt_vlan,
-            mgmt_ip: args.mgmt_ip,
-            mgmt_prefix: args.mgmt_prefix,
-            mgmt_network: args.mgmt_network,
-            mgmt_network_prefix: args.mgmt_network_prefix,
-            loopback_ip: args.loopback_ip,
-            uplink_dhcp: args.uplink_dhcp,
-            uplink_ip: args.uplink_ip,
-            uplink_prefix: args.uplink_prefix,
-            uplink_gateway: args.uplink_gateway,
-            ospf_area: args.ospf_area,
-            underlay_network: args.underlay_network,
-            underlay_network_prefix: args.underlay_network_prefix,
+            trunk_mtu,
+            trunk_speed,
+            trunk_duplex,
+            underlay_vlan,
+            underlay_ip,
+            underlay_prefix,
+            mgmt_vlan,
+            mgmt_ip,
+            mgmt_prefix,
+            mgmt_network,
+            mgmt_network_prefix,
+            loopback_ip,
+            uplink_dhcp,
+            uplink_ip,
+            uplink_prefix,
+            uplink_gateway,
+            ospf_area,
+            underlay_network,
+            underlay_network_prefix,
             ssh_pubkey,
-            bgp_asn: args.bgp_asn,
-            bgp_peer_password: args.bgp_peer_password,
-            dns_servers: args.dns_servers,
-            allow_password_auth: args.allow_password_auth,
+            bgp_asn,
+            bgp_peer_password,
+            dns_servers,
+            allow_password_auth,
         },
-        trunk_pci: args.trunk_pci,
-        uplink_pci: args.uplink_pci,
+        trunk_pci,
+        uplink_pci,
     };
 
     std::fs::create_dir_all(&args.out)?;
