@@ -122,25 +122,29 @@ pub fn prompt_bool(flag_value: Option<bool>, label: &str, default: bool) -> Resu
 }
 
 /// Comma-separated list, prompted once as a single line and split --
-/// used for `--dns-servers`, which already has a sensible default so
-/// this is mainly "press enter to accept, or type your own list".
+/// used for `--dns-servers` (has a sensible default, mainly "press
+/// enter to accept") and `--disk` (no sensible default -- `None`
+/// errors clearly in a non-interactive context instead of silently
+/// building with an empty disk list).
 pub fn prompt_list(
     flag_value: Option<Vec<String>>,
     label: &str,
-    default: &[String],
+    default: Option<&[String]>,
 ) -> Result<Vec<String>> {
     if let Some(v) = flag_value {
         return Ok(v);
     }
     if !is_interactive() {
-        return Ok(default.to_vec());
+        return match default {
+            Some(d) => Ok(d.to_vec()),
+            None => bail!("'{label}' was not provided and no terminal is available to prompt for it -- pass it explicitly via its flag"),
+        };
     }
-    let default_str = default.join(",");
-    let response: String = Input::new()
-        .with_prompt(label)
-        .default(default_str)
-        .interact_text()
-        .context("reading interactive input")?;
+    let mut input = Input::<String>::new().with_prompt(label);
+    if let Some(d) = default {
+        input = input.default(d.join(","));
+    }
+    let response: String = input.interact_text().context("reading interactive input")?;
     Ok(response
         .split(',')
         .map(str::trim)
@@ -197,13 +201,25 @@ mod tests {
     #[test]
     fn prompt_list_returns_the_flag_value_without_touching_the_terminal_when_present() {
         let v = vec!["1.1.1.1".to_string(), "9.9.9.9".to_string()];
-        assert_eq!(prompt_list(Some(v.clone()), "dns servers", &[]).unwrap(), v);
+        assert_eq!(
+            prompt_list(Some(v.clone()), "dns servers", None).unwrap(),
+            v
+        );
     }
 
     #[test]
     fn prompt_list_falls_back_to_the_default_when_non_interactive() {
         let default = vec!["8.8.8.8".to_string(), "8.8.4.4".to_string()];
-        assert_eq!(prompt_list(None, "dns servers", &default).unwrap(), default);
+        assert_eq!(
+            prompt_list(None, "dns servers", Some(&default)).unwrap(),
+            default
+        );
+    }
+
+    #[test]
+    fn prompt_list_errors_clearly_when_non_interactive_with_no_default() {
+        let err = prompt_list(None, "disk", None).unwrap_err();
+        assert!(err.to_string().contains("disk"));
     }
 
     #[test]

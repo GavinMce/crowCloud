@@ -295,16 +295,16 @@ pub struct ProxmoxBuildArgs {
     /// Plaintext root password -- hashed locally via `openssl passwd -6`
     /// before it ever touches disk; never stored or logged in plaintext
     #[arg(long)]
-    pub root_password: String,
+    pub root_password: Option<String>,
     #[arg(long)]
-    pub fqdn: String,
+    pub fqdn: Option<String>,
     /// Required by answer.toml's [global] section -- confirmed live
     /// against proxmox-auto-install-assistant, no default offered since
     /// there's no sensible one
     #[arg(long)]
-    pub admin_email: String,
+    pub admin_email: Option<String>,
     #[arg(long)]
-    pub trunk_interface: String,
+    pub trunk_interface: Option<String>,
     /// Falls back to the shared fabric config (`iso fabric-configure`)
     /// if omitted
     #[arg(long)]
@@ -313,9 +313,9 @@ pub struct ProxmoxBuildArgs {
     #[arg(long)]
     pub mgmt_vlan: Option<u16>,
     #[arg(long)]
-    pub mgmt_ip: String,
-    #[arg(long, default_value_t = 24)]
-    pub mgmt_prefix: u8,
+    pub mgmt_ip: Option<String>,
+    #[arg(long)]
+    pub mgmt_prefix: Option<u8>,
     /// This host's default gateway on the mgmt VLAN -- falls back to
     /// the shared fabric config's `mgmt_gateway` (VyOS's own mgmt IP)
     /// if omitted
@@ -325,13 +325,13 @@ pub struct ProxmoxBuildArgs {
     #[arg(long)]
     pub trunk_mtu: Option<u32>,
     #[arg(long, value_delimiter = ',')]
-    pub disk: Vec<String>,
+    pub disk: Option<Vec<String>>,
     #[arg(long)]
     pub zfs_raid: Option<String>,
     /// Where the post-install hook looks for a reachable crowCloud
     /// instance before self-electing as the fleet seed (#67)
     #[arg(long)]
-    pub crow_api_url: String,
+    pub crow_api_url: Option<String>,
     /// Baked into the image as the self-registration credential.
     /// Defaults to the locally cached fleet secret, generating one on
     /// first use if none exists yet -- no crowCloud login required
@@ -451,7 +451,7 @@ fn fabric_configure(args: FabricConfigureArgs) -> Result<()> {
         args.dns_servers
             .or(existing.as_ref().map(|f| f.dns_servers.clone())),
         "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
-        &["8.8.8.8".to_string(), "8.8.4.4".to_string()],
+        Some(&["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
     )?;
 
     let mut cfg = Config::load()?;
@@ -662,7 +662,7 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         args.dns_servers
             .or(fabric.as_ref().map(|f| f.dns_servers.clone())),
         "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
-        &["8.8.8.8".to_string(), "8.8.4.4".to_string()],
+        Some(&["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
     )?;
     let allow_password_auth = wiz::prompt_bool(
         args.allow_password_auth,
@@ -882,7 +882,7 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
         args.dns_servers
             .or(fabric.as_ref().map(|f| f.dns_servers.clone())),
         "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
-        &["8.8.8.8".to_string(), "8.8.4.4".to_string()],
+        Some(&["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
     )?;
     let allow_password_auth = wiz::prompt_bool(
         args.allow_password_auth,
@@ -958,7 +958,27 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
     use crate::iso::vyos_wizard as wiz;
     let fabric = Config::load()?.fabric;
 
-    let root_password_hash = hash_password(&args.root_password)?;
+    let root_password = wiz::prompt_secret(args.root_password, "Root password")?;
+    let root_password_hash = hash_password(&root_password)?;
+    let fqdn = wiz::prompt(args.fqdn, "FQDN", None)?;
+    let admin_email = wiz::prompt(args.admin_email, "Admin email", None)?;
+    let trunk_interface = wiz::prompt(
+        args.trunk_interface,
+        "Trunk interface (fabric NIC, e.g. eno1)",
+        None,
+    )?;
+    let mgmt_ip = wiz::prompt(args.mgmt_ip, "Management IP (this host's own)", None)?;
+    let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
+    let disk = wiz::prompt_list(
+        args.disk,
+        "Disk(s) for the install (comma-separated, e.g. sda)",
+        None,
+    )?;
+    let crow_api_url = wiz::prompt(
+        args.crow_api_url,
+        "crowCloud API URL (where the post-install hook checks reachability before self-electing as fleet seed)",
+        None,
+    )?;
     let fleet_secret = match args.fleet_secret {
         Some(s) => s,
         None => Config::fleet_secret_or_generate()?,
@@ -1013,18 +1033,18 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
 
     let cfg = proxmox_iso::ProxmoxBuildConfig {
         root_password_hash,
-        fqdn: args.fqdn,
-        admin_email: args.admin_email,
-        trunk_interface: args.trunk_interface,
+        fqdn,
+        admin_email,
+        trunk_interface,
         underlay_vlan,
         mgmt_vlan,
-        mgmt_ip: args.mgmt_ip,
-        mgmt_prefix: args.mgmt_prefix,
+        mgmt_ip,
+        mgmt_prefix,
         mgmt_gateway,
         trunk_mtu,
-        disk_list: args.disk,
+        disk_list: disk,
         zfs_raid: args.zfs_raid,
-        crow_api_url: args.crow_api_url,
+        crow_api_url,
         fleet_secret,
         bgp_asn,
         bgp_peer_password,
