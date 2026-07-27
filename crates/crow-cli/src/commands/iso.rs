@@ -127,14 +127,6 @@ pub struct VyosApplyArgs {
 pub struct VyosFlavorArgs {
     #[arg(long)]
     pub hostname: Option<String>,
-    /// PCI bus address of the fabric trunk NIC (e.g. 0000:01:00.0),
-    /// read via `readlink -f /sys/class/net/<iface>/device` on the
-    /// target box -- stable across a NIC swap in the same physical
-    /// slot, unlike the kernel-assigned interface name
-    #[arg(long)]
-    pub trunk_pci: Option<String>,
-    #[arg(long)]
-    pub uplink_pci: Option<String>,
     #[arg(long)]
     pub trunk_mtu: Option<u32>,
     #[arg(long, requires = "trunk_duplex")]
@@ -756,12 +748,6 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
     let fabric = Config::load()?.fabric;
 
     let hostname = wiz::prompt(args.hostname, "Hostname", None)?;
-    let trunk_pci = wiz::prompt(
-        args.trunk_pci,
-        "Trunk NIC PCI bus address (e.g. 0000:01:00.0 -- readlink -f /sys/class/net/<iface>/device on the target box)",
-        None,
-    )?;
-    let uplink_pci = wiz::prompt(args.uplink_pci, "Uplink NIC PCI bus address", None)?;
     let trunk_mtu = wiz::prompt(
         args.trunk_mtu,
         "Trunk MTU",
@@ -915,8 +901,8 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
     let cfg = vyos_flavor_iso::VyosFlavorConfig {
         base: vyos_iso::VyosBuildConfig {
             hostname,
-            // Ignored by the flavor renderer -- it resolves the real
-            // interface names at boot from trunk_pci/uplink_pci instead.
+            // Ignored by the flavor renderer -- it detects the real
+            // interface names live at boot instead.
             trunk_interface: String::new(),
             uplink_interface: String::new(),
             trunk_mtu,
@@ -944,8 +930,6 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
             dns_servers,
             allow_password_auth,
         },
-        trunk_pci,
-        uplink_pci,
     };
 
     std::fs::create_dir_all(&args.out)?;
