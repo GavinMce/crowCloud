@@ -24,7 +24,15 @@ CROW_DOMAIN="${CROW_DOMAIN:-}"
 CROW_FLEET_SECRET="${CROW_FLEET_SECRET:-}"
 
 NAMESPACE=crow-system
-REPO_URL="https://github.com/GavinMce/crowCloud.git"
+# Only used for the local-checkout preference below, not for fetching
+# the chart -- that comes from the same GHCR OCI artifact the release
+# pipeline (cd_publish.yml) already publishes the Docker images to,
+# not a fresh git clone of the source repo (confirmed live: the chart
+# was previously fetched by cloning the whole repo at whatever `main`
+# happened to be, unpinned to CROW_VERSION -- a real version-skew risk
+# against the pinned container image tags, on top of depending on
+# GitHub reachability as well as GHCR).
+CHART_OCI="oci://ghcr.io/gavinmce/charts/crowcloud"
 
 echo "==> Checking prerequisites"
 if [ "$(id -u)" -ne 0 ]; then
@@ -37,17 +45,6 @@ for cmd in curl openssl; do
     exit 1
   fi
 done
-
-if [ ! -d "./charts/crowcloud" ]; then
-  echo "==> ./charts/crowcloud not found -- cloning crowCloud to fetch the Helm chart"
-  if ! command -v git >/dev/null 2>&1; then
-    echo "Missing required command: git (needed to fetch the Helm chart outside a repo checkout)" >&2
-    exit 1
-  fi
-  CLONE_DIR="$(mktemp -d)"
-  git clone --depth 1 "$REPO_URL" "$CLONE_DIR"
-  cd "$CLONE_DIR"
-fi
 
 echo "==> Installing K3s (management cluster)"
 curl -sfL https://get.k3s.io | sh -s - \
@@ -67,9 +64,30 @@ helm upgrade --install cnpg cnpg/cloudnative-pg \
   --create-namespace \
   --wait
 
+if [ -d "./charts/crowcloud" ]; then
+  echo "==> Using the local ./charts/crowcloud checkout (unpublished changes take priority)"
+  CHART_PATH="./charts/crowcloud"
+else
+  echo "==> Pulling the crowCloud Helm chart from GHCR (version: $CROW_VERSION)"
+  CHART_DIR="$(mktemp -d)"
+  # Confirmed against Helm's own OCI resolution source
+  # (pkg/registry/client.go, ValidateReference): omitting --version
+  # entirely lists the OCI repo's tags, semver-sorts them, and resolves
+  # to the newest -- but passing the literal string "latest" as
+  # --version fails outright ("improper constraint: latest"), since
+  # OCI chart tags are never aliased to "latest" the way Docker image
+  # tags are. Must omit the flag, not pass it, for the default case.
+  if [ "$CROW_VERSION" = "latest" ]; then
+    helm pull "$CHART_OCI" --untar --untardir "$CHART_DIR"
+  else
+    helm pull "$CHART_OCI" --version "$CROW_VERSION" --untar --untardir "$CHART_DIR"
+  fi
+  CHART_PATH="$CHART_DIR/crowcloud"
+fi
+
 echo "==> Deploying crowCloud (version: $CROW_VERSION)"
 HELM_ARGS=(
-  upgrade --install crowcloud ./charts/crowcloud
+  upgrade --install crowcloud "$CHART_PATH"
   --namespace "$NAMESPACE"
   --create-namespace
   --set api.tag="$CROW_VERSION"
@@ -117,7 +135,7 @@ crowCloud is running.
   first Cloud Host (e.g. Proxmox).
 
   Prefer the CLI?
-    cargo install --path crates/crow-cli
+    Download crow-cli from https://github.com/GavinMce/crowCloud/releases
     crow login --server http://$NODE_IP:8080
 
 EOF

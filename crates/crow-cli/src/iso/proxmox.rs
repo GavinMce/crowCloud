@@ -717,4 +717,21 @@ mod tests {
         assert!(out.contains("Day-0 bootstrap"));
         assert!(out.contains("Installing K3s"));
     }
+
+    #[test]
+    fn seed_cloud_init_fetches_the_helm_chart_from_ghcr_not_a_source_clone() {
+        // Confirmed live: bootstrap.sh previously fetched the Helm
+        // chart by git-cloning the whole source repo at whatever
+        // `main` happened to be, unpinned to CROW_VERSION -- a real
+        // version-skew risk against the pinned container image tags,
+        // on top of depending on GitHub reachability as well as GHCR.
+        // The chart is already published to the same GHCR OCI
+        // registry as the Docker images via the release pipeline, so
+        // the embedded seed-VM bootstrap should pull it from there
+        // instead of cloning source.
+        let out = render_seed_cloud_init("x");
+        assert!(out.contains("oci://ghcr.io/gavinmce/charts/crowcloud"));
+        assert!(!out.contains("git clone --depth 1"));
+        assert!(!out.contains("github.com/GavinMce/crowCloud.git"));
+    }
 }
