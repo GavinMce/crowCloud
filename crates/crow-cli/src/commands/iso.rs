@@ -324,8 +324,25 @@ pub struct ProxmoxBuildArgs {
     /// Falls back to the shared fabric config if omitted
     #[arg(long)]
     pub trunk_mtu: Option<u32>,
-    #[arg(long, value_delimiter = ',')]
+    /// Explicit disk device names (e.g. sda,sdb) -- mutually exclusive
+    /// with --disk-filter. The installer already excludes the boot/
+    /// install medium automatically, so neither this nor --disk-filter
+    /// needs to account for it
+    #[arg(long, value_delimiter = ',', conflicts_with = "disk_filter")]
     pub disk: Option<Vec<String>>,
+    /// Match disks by UDEV property instead of explicit names (e.g.
+    /// ID_BUS=ata) -- mutually exclusive with --disk. Verify against
+    /// `udevadm info --query=property --name=/dev/sdX` on the real
+    /// target hardware before using; a filter broad enough to match
+    /// every intended disk (and narrow enough to exclude anything it
+    /// shouldn't) is your responsibility to get right, not something
+    /// with a safe default
+    #[arg(long, value_delimiter = ',')]
+    pub disk_filter: Option<Vec<String>>,
+    /// "any" (default) or "all" -- whether one matching filter key is
+    /// enough, or every key must match. Only meaningful with --disk-filter
+    #[arg(long)]
+    pub disk_filter_match: Option<String>,
     #[arg(long)]
     pub zfs_raid: Option<String>,
     /// Where the post-install hook looks for a reachable crowCloud
@@ -954,6 +971,72 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
     Ok(())
 }
 
+/// `--disk` and `--disk-filter` are mutually exclusive (enforced by
+/// clap's `conflicts_with` for the flag case); when neither is given,
+/// prompts interactively for which mode to use rather than defaulting
+/// to one, since a filter broad/narrow enough to correctly select
+/// every intended disk depends entirely on the target hardware --
+/// there's no safe default to fall back to (see `DiskSelection`'s doc
+/// comment).
+fn resolve_disk_selection(
+    disk: Option<Vec<String>>,
+    disk_filter: Option<Vec<String>>,
+    disk_filter_match: Option<String>,
+) -> Result<proxmox_iso::DiskSelection> {
+    use crate::iso::vyos_wizard as wiz;
+
+    if let Some(disks) = disk {
+        return Ok(proxmox_iso::DiskSelection::List(disks));
+    }
+    if let Some(pairs) = disk_filter {
+        return Ok(proxmox_iso::DiskSelection::Filter {
+            filter: parse_disk_filter_pairs(&pairs)?,
+            filter_match: disk_filter_match,
+        });
+    }
+
+    if wiz::prompt_bool(
+        None,
+        "Match disks by a UDEV property filter instead of explicit device names?",
+        false,
+    )? {
+        let pairs = wiz::prompt_list(
+            None,
+            "Filter(s) as KEY=value (comma-separated, e.g. ID_BUS=ata) -- verify against \
+             `udevadm info --query=property --name=/dev/sdX` on the real box first",
+            None,
+        )?;
+        let filter_match = wiz::prompt(
+            disk_filter_match,
+            "Filter match mode (any/all)",
+            Some("any".to_string()),
+        )?;
+        Ok(proxmox_iso::DiskSelection::Filter {
+            filter: parse_disk_filter_pairs(&pairs)?,
+            filter_match: Some(filter_match),
+        })
+    } else {
+        let disks = wiz::prompt_list(
+            None,
+            "Disk(s) for the install (comma-separated, e.g. sda)",
+            None,
+        )?;
+        Ok(proxmox_iso::DiskSelection::List(disks))
+    }
+}
+
+fn parse_disk_filter_pairs(pairs: &[String]) -> Result<Vec<(String, String)>> {
+    pairs
+        .iter()
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').with_context(|| {
+                format!("invalid disk filter '{pair}' -- expected KEY=value, e.g. ID_BUS=ata")
+            })?;
+            Ok((key.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
 fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
     use crate::iso::vyos_wizard as wiz;
     let fabric = Config::load()?.fabric;
@@ -969,11 +1052,8 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
     )?;
     let mgmt_ip = wiz::prompt(args.mgmt_ip, "Management IP (this host's own)", None)?;
     let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
-    let disk = wiz::prompt_list(
-        args.disk,
-        "Disk(s) for the install (comma-separated, e.g. sda)",
-        None,
-    )?;
+    let disk_selection =
+        resolve_disk_selection(args.disk, args.disk_filter, args.disk_filter_match)?;
     let crow_api_url = wiz::prompt(
         args.crow_api_url,
         "crowCloud API URL (where the post-install hook checks reachability before self-electing as fleet seed)",
@@ -1042,7 +1122,7 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         mgmt_prefix,
         mgmt_gateway,
         trunk_mtu,
-        disk_list: disk,
+        disk_selection,
         zfs_raid: args.zfs_raid,
         crow_api_url,
         fleet_secret,

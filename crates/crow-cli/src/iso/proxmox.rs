@@ -24,7 +24,7 @@ pub struct ProxmoxBuildConfig {
     pub mgmt_prefix: u8,
     pub mgmt_gateway: String,
     pub trunk_mtu: u32,
-    pub disk_list: Vec<String>,
+    pub disk_selection: DiskSelection,
     pub zfs_raid: Option<String>,
     pub crow_api_url: String,
     pub fleet_secret: String,
@@ -32,6 +32,40 @@ pub struct ProxmoxBuildConfig {
     pub bgp_peer_password: String,
     pub underlay_prefix: u8,
     pub ospf_area: String,
+}
+
+/// `answer.toml`'s `[disk-setup]` accepts either an explicit
+/// `disk-list` of device names, or a `filter` against UDEV properties
+/// (e.g. `ID_SERIAL`, `ID_WWN`, `ID_BUS`) -- confirmed against
+/// Proxmox's official Automated Installation docs and the installer's
+/// own answer-file struct (pve-devel patch introducing it). These are
+/// mutually exclusive -- the installer itself errors with "Need either
+/// 'disk_list' or 'filter' set" / "Cannot use both" if given neither or
+/// both, which `render_answer_toml` never can since this is an enum.
+///
+/// The installer's own disk enumeration already excludes the live
+/// boot/install medium automatically (it detects the iso9660
+/// filesystem and skips it) before either `disk-list` or `filter` ever
+/// run, so neither variant needs to account for the boot USB itself --
+/// confirmed against Proxmox's installer source and the well-known
+/// "found ISO9660 FS but no or wrong proxmox cd-id, skipping" log line.
+/// There is no documented "match all disks" wildcard, though -- a
+/// `Filter` broad enough to match every real target disk on a given
+/// box's specific hardware is the caller's responsibility to get right
+/// (e.g. via `udevadm info --query=property --name=/dev/sdX` on the
+/// real box), not something this can safely default for you.
+#[derive(Clone, Debug)]
+pub enum DiskSelection {
+    List(Vec<String>),
+    Filter {
+        /// `(UDEV_KEY, value)` pairs, e.g. `("ID_BUS", "ata")`. Values
+        /// support a trailing `*` glob per Proxmox's docs.
+        filter: Vec<(String, String)>,
+        /// `"any"` (Proxmox's own default if omitted) or `"all"` --
+        /// whether one matching filter key is enough, or every key
+        /// must match.
+        filter_match: Option<String>,
+    },
 }
 
 /// The literal contents of `deploy/bootstrap.sh`, embedded at compile
@@ -101,13 +135,27 @@ pub fn render_answer_toml(cfg: &ProxmoxBuildConfig) -> String {
     } else {
         out.push_str("filesystem = \"ext4\"\n");
     }
-    let disks = cfg
-        .disk_list
-        .iter()
-        .map(|d| format!("\"{d}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    out.push_str(&format!("disk-list = [{disks}]\n"));
+    match &cfg.disk_selection {
+        DiskSelection::List(disks) => {
+            let disks = disks
+                .iter()
+                .map(|d| format!("\"{d}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("disk-list = [{disks}]\n"));
+        }
+        DiskSelection::Filter {
+            filter,
+            filter_match,
+        } => {
+            for (key, value) in filter {
+                out.push_str(&format!("filter.{key} = \"{value}\"\n"));
+            }
+            if let Some(m) = filter_match {
+                out.push_str(&format!("filter-match = \"{m}\"\n"));
+            }
+        }
+    }
     out.push('\n');
 
     // Confirmed live: `--on-first-boot` (the CLI flag bundling the hook
@@ -376,7 +424,7 @@ mod tests {
             mgmt_prefix: 24,
             mgmt_gateway: "10.255.20.1".into(),
             trunk_mtu: 9000,
-            disk_list: vec!["sda".into(), "sdb".into()],
+            disk_selection: DiskSelection::List(vec!["sda".into(), "sdb".into()]),
             zfs_raid: Some("raid1".into()),
             crow_api_url: "https://crowcloud.fleet.local".into(),
             fleet_secret: "fleet-secret-abc".into(),
@@ -412,6 +460,25 @@ mod tests {
         assert!(out.contains("filesystem = \"zfs\""));
         assert!(out.contains("zfs.raid = \"raid1\""));
         assert!(out.contains("disk-list = [\"sda\", \"sdb\"]"));
+    }
+
+    #[test]
+    fn answer_toml_supports_udev_filter_instead_of_a_hardcoded_disk_list() {
+        // Confirmed against Proxmox's official Automated Installation
+        // docs: `[disk-setup]` accepts `filter.<UDEV_KEY> = "<value>"`
+        // dotted keys plus `filter-match`, as an alternative to
+        // `disk-list` -- these two are mutually exclusive on the
+        // installer's side (this enum makes that structurally
+        // unrepresentable here, not just documented).
+        let mut c = cfg();
+        c.disk_selection = DiskSelection::Filter {
+            filter: vec![("ID_BUS".to_string(), "ata".to_string())],
+            filter_match: Some("any".to_string()),
+        };
+        let out = render_answer_toml(&c);
+        assert!(out.contains("filter.ID_BUS = \"ata\""));
+        assert!(out.contains("filter-match = \"any\""));
+        assert!(!out.contains("disk-list"));
     }
 
     #[test]
