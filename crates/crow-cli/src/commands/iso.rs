@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::Config;
+use crate::iso::fabric::FabricConfig;
 use crate::iso::{proxmox as proxmox_iso, vyos as vyos_iso, vyos_flavor as vyos_flavor_iso};
 
 #[derive(Args)]
@@ -18,6 +19,42 @@ pub enum IsoSubcommand {
     Vyos(VyosCmd),
     /// Build a pre-baked Proxmox VE image (#66)
     Proxmox(Box<ProxmoxCmd>),
+    /// Configure fabric-wide network settings once, shared by every
+    /// `iso vyos`/`iso proxmox` build command afterwards (#66) --
+    /// values like the BGP peer password or VLAN IDs have to match
+    /// exactly across every host, so this is the single place they get
+    /// typed instead of once per build
+    FabricConfigure(Box<FabricConfigureArgs>),
+}
+
+#[derive(Args)]
+pub struct FabricConfigureArgs {
+    #[arg(long)]
+    pub underlay_vlan: Option<u16>,
+    #[arg(long)]
+    pub underlay_network: Option<String>,
+    #[arg(long)]
+    pub underlay_network_prefix: Option<u8>,
+    #[arg(long)]
+    pub mgmt_vlan: Option<u16>,
+    #[arg(long)]
+    pub mgmt_network: Option<String>,
+    #[arg(long)]
+    pub mgmt_network_prefix: Option<u8>,
+    /// VyOS's own IP on the mgmt VLAN -- also every Proxmox host's
+    /// default gateway on that VLAN
+    #[arg(long)]
+    pub mgmt_gateway: Option<String>,
+    #[arg(long)]
+    pub trunk_mtu: Option<u32>,
+    #[arg(long)]
+    pub ospf_area: Option<String>,
+    #[arg(long)]
+    pub bgp_asn: Option<u32>,
+    #[arg(long)]
+    pub bgp_peer_password: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub dns_servers: Option<Vec<String>>,
 }
 
 #[derive(Args)]
@@ -249,18 +286,25 @@ pub struct ProxmoxBuildArgs {
     pub admin_email: String,
     #[arg(long)]
     pub trunk_interface: String,
+    /// Falls back to the shared fabric config (`iso fabric-configure`)
+    /// if omitted
     #[arg(long)]
-    pub underlay_vlan: u16,
+    pub underlay_vlan: Option<u16>,
+    /// Falls back to the shared fabric config if omitted
     #[arg(long)]
-    pub mgmt_vlan: u16,
+    pub mgmt_vlan: Option<u16>,
     #[arg(long)]
     pub mgmt_ip: String,
     #[arg(long, default_value_t = 24)]
     pub mgmt_prefix: u8,
+    /// This host's default gateway on the mgmt VLAN -- falls back to
+    /// the shared fabric config's `mgmt_gateway` (VyOS's own mgmt IP)
+    /// if omitted
     #[arg(long)]
-    pub mgmt_gateway: String,
-    #[arg(long, default_value_t = 9000)]
-    pub trunk_mtu: u32,
+    pub mgmt_gateway: Option<String>,
+    /// Falls back to the shared fabric config if omitted
+    #[arg(long)]
+    pub trunk_mtu: Option<u32>,
     #[arg(long, value_delimiter = ',')]
     pub disk: Vec<String>,
     #[arg(long)]
@@ -275,14 +319,19 @@ pub struct ProxmoxBuildArgs {
     /// (#67's bootstrap case)
     #[arg(long)]
     pub fleet_secret: Option<String>,
-    #[arg(long, default_value_t = 65000)]
-    pub bgp_asn: u32,
+    /// Falls back to the shared fabric config if omitted
     #[arg(long)]
-    pub bgp_peer_password: String,
-    #[arg(long, default_value_t = 24)]
-    pub underlay_prefix: u8,
-    #[arg(long, default_value = "0")]
-    pub ospf_area: String,
+    pub bgp_asn: Option<u32>,
+    /// Falls back to the shared fabric config if omitted
+    #[arg(long)]
+    pub bgp_peer_password: Option<String>,
+    /// Falls back to the shared fabric config's `underlay_network_prefix`
+    /// if omitted
+    #[arg(long)]
+    pub underlay_prefix: Option<u8>,
+    /// Falls back to the shared fabric config if omitted
+    #[arg(long)]
+    pub ospf_area: Option<String>,
     /// A locally-provided Proxmox VE ISO -- never auto-downloaded
     #[arg(long)]
     pub base_iso: Option<PathBuf>,
@@ -304,7 +353,109 @@ pub async fn run(cmd: IsoCmd) -> Result<()> {
         IsoSubcommand::Proxmox(proxmox_cmd) => match proxmox_cmd.command {
             ProxmoxSubcommand::Build(args) => build_proxmox(args),
         },
+        IsoSubcommand::FabricConfigure(args) => fabric_configure(*args),
     }
+}
+
+fn fabric_configure(args: FabricConfigureArgs) -> Result<()> {
+    use crate::iso::vyos_wizard as wiz;
+
+    let existing = Config::load()?.fabric;
+
+    let underlay_vlan = wiz::prompt(
+        args.underlay_vlan,
+        "Underlay VLAN ID",
+        existing.as_ref().map(|f| f.underlay_vlan),
+    )?;
+    let underlay_network = wiz::prompt(
+        args.underlay_network,
+        "Underlay network address",
+        existing.as_ref().map(|f| f.underlay_network.clone()),
+    )?;
+    let underlay_network_prefix = wiz::prompt(
+        args.underlay_network_prefix,
+        "Underlay network prefix length",
+        existing
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
+    )?;
+    let mgmt_vlan = wiz::prompt(
+        args.mgmt_vlan,
+        "Management VLAN ID",
+        existing.as_ref().map(|f| f.mgmt_vlan),
+    )?;
+    let mgmt_network = wiz::prompt(
+        args.mgmt_network,
+        "Management subnet network address",
+        existing.as_ref().map(|f| f.mgmt_network.clone()),
+    )?;
+    let mgmt_network_prefix = wiz::prompt(
+        args.mgmt_network_prefix,
+        "Management subnet prefix length",
+        existing
+            .as_ref()
+            .map(|f| f.mgmt_network_prefix)
+            .or(Some(24)),
+    )?;
+    let mgmt_gateway = wiz::prompt(
+        args.mgmt_gateway,
+        "Management gateway IP (VyOS's own IP on the mgmt VLAN)",
+        existing.as_ref().map(|f| f.mgmt_gateway.clone()),
+    )?;
+    let trunk_mtu = wiz::prompt(
+        args.trunk_mtu,
+        "Trunk MTU",
+        existing.as_ref().map(|f| f.trunk_mtu).or(Some(9000)),
+    )?;
+    let ospf_area = wiz::prompt(
+        args.ospf_area,
+        "OSPF area",
+        existing
+            .as_ref()
+            .map(|f| f.ospf_area.clone())
+            .or(Some("0".to_string())),
+    )?;
+    let bgp_asn = wiz::prompt(
+        args.bgp_asn,
+        "BGP ASN",
+        existing.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
+    )?;
+    let bgp_peer_password = wiz::prompt_secret(
+        args.bgp_peer_password
+            .or(existing.as_ref().map(|f| f.bgp_peer_password.clone())),
+        "BGP peer-group password",
+    )?;
+    let dns_servers = wiz::prompt_list(
+        args.dns_servers
+            .or(existing.as_ref().map(|f| f.dns_servers.clone())),
+        "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
+        &["8.8.8.8".to_string(), "8.8.4.4".to_string()],
+    )?;
+
+    let mut cfg = Config::load()?;
+    cfg.fabric = Some(FabricConfig {
+        underlay_vlan,
+        underlay_network,
+        underlay_network_prefix,
+        mgmt_vlan,
+        mgmt_network,
+        mgmt_network_prefix,
+        mgmt_gateway,
+        trunk_mtu,
+        ospf_area,
+        bgp_asn,
+        bgp_peer_password,
+        dns_servers,
+    });
+    cfg.save()?;
+
+    println!("Saved fabric config to {}", Config::path().display());
+    println!(
+        "`iso vyos build`, `iso vyos flavor`, and `iso proxmox build` will use these values \
+         automatically -- pass a flag explicitly on any of them to override just that one field."
+    );
+    Ok(())
 }
 
 async fn apply_vyos(args: VyosApplyArgs) -> Result<()> {
@@ -334,6 +485,7 @@ async fn apply_vyos(args: VyosApplyArgs) -> Result<()> {
 
 fn build_vyos(args: VyosBuildArgs) -> Result<()> {
     use crate::iso::vyos_wizard as wiz;
+    let fabric = Config::load()?.fabric;
 
     let hostname = wiz::prompt(args.hostname, "Hostname", None)?;
     let trunk_interface = wiz::prompt(
@@ -346,7 +498,11 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         "Uplink interface (internet/LAN NIC, e.g. eth2)",
         None,
     )?;
-    let trunk_mtu = wiz::prompt(args.trunk_mtu, "Trunk MTU", Some(9000))?;
+    let trunk_mtu = wiz::prompt(
+        args.trunk_mtu,
+        "Trunk MTU",
+        fabric.as_ref().map(|f| f.trunk_mtu).or(Some(9000)),
+    )?;
 
     let (trunk_speed, trunk_duplex) = match (args.trunk_speed, args.trunk_duplex) {
         (Some(s), Some(d)) => (Some(s), Some(d)),
@@ -374,25 +530,47 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         }
     };
 
-    let underlay_vlan = wiz::prompt(args.underlay_vlan, "Underlay VLAN ID", None)?;
+    let underlay_vlan = wiz::prompt(
+        args.underlay_vlan,
+        "Underlay VLAN ID",
+        fabric.as_ref().map(|f| f.underlay_vlan),
+    )?;
     let underlay_ip = wiz::prompt(
         args.underlay_ip,
         "Underlay loopback-facing IP (this router's own)",
         None,
     )?;
-    let underlay_prefix = wiz::prompt(args.underlay_prefix, "Underlay prefix length", Some(24))?;
-    let mgmt_vlan = wiz::prompt(args.mgmt_vlan, "Management VLAN ID", None)?;
-    let mgmt_ip = wiz::prompt(args.mgmt_ip, "Management IP (this router's own)", None)?;
+    let underlay_prefix = wiz::prompt(
+        args.underlay_prefix,
+        "Underlay prefix length",
+        fabric
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
+    )?;
+    let mgmt_vlan = wiz::prompt(
+        args.mgmt_vlan,
+        "Management VLAN ID",
+        fabric.as_ref().map(|f| f.mgmt_vlan),
+    )?;
+    // VyOS's own mgmt IP *is* the fabric's mgmt_gateway (every Proxmox
+    // host's default gateway on that VLAN points at it), so the stored
+    // fabric config's mgmt_gateway is exactly the right default here.
+    let mgmt_ip = wiz::prompt(
+        args.mgmt_ip,
+        "Management IP (this router's own)",
+        fabric.as_ref().map(|f| f.mgmt_gateway.clone()),
+    )?;
     let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
     let mgmt_network = wiz::prompt(
         args.mgmt_network,
         "Management subnet network address (not this router's own IP)",
-        None,
+        fabric.as_ref().map(|f| f.mgmt_network.clone()),
     )?;
     let mgmt_network_prefix = wiz::prompt(
         args.mgmt_network_prefix,
         "Management subnet prefix length",
-        Some(24),
+        fabric.as_ref().map(|f| f.mgmt_network_prefix).or(Some(24)),
     )?;
     let loopback_ip = wiz::prompt(
         args.loopback_ip,
@@ -421,12 +599,26 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         )
     };
 
-    let ospf_area = wiz::prompt(args.ospf_area, "OSPF area", Some("0".to_string()))?;
-    let underlay_network = wiz::prompt(args.underlay_network, "Underlay network address", None)?;
+    let ospf_area = wiz::prompt(
+        args.ospf_area,
+        "OSPF area",
+        fabric
+            .as_ref()
+            .map(|f| f.ospf_area.clone())
+            .or(Some("0".to_string())),
+    )?;
+    let underlay_network = wiz::prompt(
+        args.underlay_network,
+        "Underlay network address",
+        fabric.as_ref().map(|f| f.underlay_network.clone()),
+    )?;
     let underlay_network_prefix = wiz::prompt(
         args.underlay_network_prefix,
         "Underlay network prefix length",
-        Some(24),
+        fabric
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
     )?;
 
     let ssh_pubkey_path = wiz::prompt_path(args.ssh_pubkey, "Path to SSH public key file")?;
@@ -435,10 +627,19 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         .trim()
         .to_string();
 
-    let bgp_asn = wiz::prompt(args.bgp_asn, "BGP ASN", Some(65000))?;
-    let bgp_peer_password = wiz::prompt_secret(args.bgp_peer_password, "BGP peer-group password")?;
+    let bgp_asn = wiz::prompt(
+        args.bgp_asn,
+        "BGP ASN",
+        fabric.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
+    )?;
+    let bgp_peer_password = wiz::prompt_secret(
+        args.bgp_peer_password
+            .or(fabric.as_ref().map(|f| f.bgp_peer_password.clone())),
+        "BGP peer-group password",
+    )?;
     let dns_servers = wiz::prompt_list(
-        args.dns_servers,
+        args.dns_servers
+            .or(fabric.as_ref().map(|f| f.dns_servers.clone())),
         "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
         &["8.8.8.8".to_string(), "8.8.4.4".to_string()],
     )?;
@@ -509,6 +710,7 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
 
 fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
     use crate::iso::vyos_wizard as wiz;
+    let fabric = Config::load()?.fabric;
 
     let hostname = wiz::prompt(args.hostname, "Hostname", None)?;
     let trunk_pci = wiz::prompt(
@@ -517,7 +719,11 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
         None,
     )?;
     let uplink_pci = wiz::prompt(args.uplink_pci, "Uplink NIC PCI bus address", None)?;
-    let trunk_mtu = wiz::prompt(args.trunk_mtu, "Trunk MTU", Some(9000))?;
+    let trunk_mtu = wiz::prompt(
+        args.trunk_mtu,
+        "Trunk MTU",
+        fabric.as_ref().map(|f| f.trunk_mtu).or(Some(9000)),
+    )?;
 
     let (trunk_speed, trunk_duplex) = match (args.trunk_speed, args.trunk_duplex) {
         (Some(s), Some(d)) => (Some(s), Some(d)),
@@ -545,25 +751,46 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
         }
     };
 
-    let underlay_vlan = wiz::prompt(args.underlay_vlan, "Underlay VLAN ID", None)?;
+    let underlay_vlan = wiz::prompt(
+        args.underlay_vlan,
+        "Underlay VLAN ID",
+        fabric.as_ref().map(|f| f.underlay_vlan),
+    )?;
     let underlay_ip = wiz::prompt(
         args.underlay_ip,
         "Underlay loopback-facing IP (this router's own)",
         None,
     )?;
-    let underlay_prefix = wiz::prompt(args.underlay_prefix, "Underlay prefix length", Some(24))?;
-    let mgmt_vlan = wiz::prompt(args.mgmt_vlan, "Management VLAN ID", None)?;
-    let mgmt_ip = wiz::prompt(args.mgmt_ip, "Management IP (this router's own)", None)?;
+    let underlay_prefix = wiz::prompt(
+        args.underlay_prefix,
+        "Underlay prefix length",
+        fabric
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
+    )?;
+    let mgmt_vlan = wiz::prompt(
+        args.mgmt_vlan,
+        "Management VLAN ID",
+        fabric.as_ref().map(|f| f.mgmt_vlan),
+    )?;
+    // VyOS's own mgmt IP *is* the fabric's mgmt_gateway (every Proxmox
+    // host's default gateway on that VLAN points at it).
+    let mgmt_ip = wiz::prompt(
+        args.mgmt_ip,
+        "Management IP (this router's own)",
+        fabric.as_ref().map(|f| f.mgmt_gateway.clone()),
+    )?;
     let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
     let mgmt_network = wiz::prompt(
         args.mgmt_network,
         "Management subnet network address (not this router's own IP)",
-        None,
+        fabric.as_ref().map(|f| f.mgmt_network.clone()),
     )?;
     let mgmt_network_prefix = wiz::prompt(
         args.mgmt_network_prefix,
         "Management subnet prefix length",
-        Some(24),
+        fabric.as_ref().map(|f| f.mgmt_network_prefix).or(Some(24)),
     )?;
     let loopback_ip = wiz::prompt(
         args.loopback_ip,
@@ -592,12 +819,26 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
         )
     };
 
-    let ospf_area = wiz::prompt(args.ospf_area, "OSPF area", Some("0".to_string()))?;
-    let underlay_network = wiz::prompt(args.underlay_network, "Underlay network address", None)?;
+    let ospf_area = wiz::prompt(
+        args.ospf_area,
+        "OSPF area",
+        fabric
+            .as_ref()
+            .map(|f| f.ospf_area.clone())
+            .or(Some("0".to_string())),
+    )?;
+    let underlay_network = wiz::prompt(
+        args.underlay_network,
+        "Underlay network address",
+        fabric.as_ref().map(|f| f.underlay_network.clone()),
+    )?;
     let underlay_network_prefix = wiz::prompt(
         args.underlay_network_prefix,
         "Underlay network prefix length",
-        Some(24),
+        fabric
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
     )?;
 
     let ssh_pubkey_path = wiz::prompt_path(args.ssh_pubkey, "Path to SSH public key file")?;
@@ -606,10 +847,19 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
         .trim()
         .to_string();
 
-    let bgp_asn = wiz::prompt(args.bgp_asn, "BGP ASN", Some(65000))?;
-    let bgp_peer_password = wiz::prompt_secret(args.bgp_peer_password, "BGP peer-group password")?;
+    let bgp_asn = wiz::prompt(
+        args.bgp_asn,
+        "BGP ASN",
+        fabric.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
+    )?;
+    let bgp_peer_password = wiz::prompt_secret(
+        args.bgp_peer_password
+            .or(fabric.as_ref().map(|f| f.bgp_peer_password.clone())),
+        "BGP peer-group password",
+    )?;
     let dns_servers = wiz::prompt_list(
-        args.dns_servers,
+        args.dns_servers
+            .or(fabric.as_ref().map(|f| f.dns_servers.clone())),
         "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
         &["8.8.8.8".to_string(), "8.8.4.4".to_string()],
     )?;
@@ -684,31 +934,81 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
 }
 
 fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
+    use crate::iso::vyos_wizard as wiz;
+    let fabric = Config::load()?.fabric;
+
     let root_password_hash = hash_password(&args.root_password)?;
     let fleet_secret = match args.fleet_secret {
         Some(s) => s,
         None => Config::fleet_secret_or_generate()?,
     };
 
+    let underlay_vlan = wiz::prompt(
+        args.underlay_vlan,
+        "Underlay VLAN ID",
+        fabric.as_ref().map(|f| f.underlay_vlan),
+    )?;
+    let mgmt_vlan = wiz::prompt(
+        args.mgmt_vlan,
+        "Management VLAN ID",
+        fabric.as_ref().map(|f| f.mgmt_vlan),
+    )?;
+    let mgmt_gateway = wiz::prompt(
+        args.mgmt_gateway,
+        "Management gateway IP (VyOS's own IP on the mgmt VLAN)",
+        fabric.as_ref().map(|f| f.mgmt_gateway.clone()),
+    )?;
+    let trunk_mtu = wiz::prompt(
+        args.trunk_mtu,
+        "Trunk MTU",
+        fabric.as_ref().map(|f| f.trunk_mtu).or(Some(9000)),
+    )?;
+    let bgp_asn = wiz::prompt(
+        args.bgp_asn,
+        "BGP ASN",
+        fabric.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
+    )?;
+    let bgp_peer_password = wiz::prompt_secret(
+        args.bgp_peer_password
+            .or(fabric.as_ref().map(|f| f.bgp_peer_password.clone())),
+        "BGP peer-group password",
+    )?;
+    let underlay_prefix = wiz::prompt(
+        args.underlay_prefix,
+        "Underlay prefix length",
+        fabric
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
+    )?;
+    let ospf_area = wiz::prompt(
+        args.ospf_area,
+        "OSPF area",
+        fabric
+            .as_ref()
+            .map(|f| f.ospf_area.clone())
+            .or(Some("0".to_string())),
+    )?;
+
     let cfg = proxmox_iso::ProxmoxBuildConfig {
         root_password_hash,
         fqdn: args.fqdn,
         admin_email: args.admin_email,
         trunk_interface: args.trunk_interface,
-        underlay_vlan: args.underlay_vlan,
-        mgmt_vlan: args.mgmt_vlan,
+        underlay_vlan,
+        mgmt_vlan,
         mgmt_ip: args.mgmt_ip,
         mgmt_prefix: args.mgmt_prefix,
-        mgmt_gateway: args.mgmt_gateway,
-        trunk_mtu: args.trunk_mtu,
+        mgmt_gateway,
+        trunk_mtu,
         disk_list: args.disk,
         zfs_raid: args.zfs_raid,
         crow_api_url: args.crow_api_url,
         fleet_secret,
-        bgp_asn: args.bgp_asn,
-        bgp_peer_password: args.bgp_peer_password,
-        underlay_prefix: args.underlay_prefix,
-        ospf_area: args.ospf_area,
+        bgp_asn,
+        bgp_peer_password,
+        underlay_prefix,
+        ospf_area,
     };
 
     std::fs::create_dir_all(&args.out)?;

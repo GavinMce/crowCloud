@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::iso::fabric::FabricConfig;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -17,6 +18,9 @@ pub struct Config {
     /// of the same value a `fleet_secrets` row on the server holds once
     /// crowCloud is up (see `iso::proxmox`).
     pub fleet_secret: Option<String>,
+    /// Set once via `crow iso fabric-configure`, read automatically by
+    /// every ISO build command afterwards (see `iso::fabric`).
+    pub fabric: Option<FabricConfig>,
 }
 
 impl Config {
