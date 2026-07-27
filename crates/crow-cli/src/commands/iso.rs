@@ -324,31 +324,28 @@ pub struct ProxmoxBuildArgs {
     /// Falls back to the shared fabric config if omitted
     #[arg(long)]
     pub trunk_mtu: Option<u32>,
-    /// Explicit disk device names (e.g. sda,sdb) -- mutually exclusive
-    /// with --disk-filter. The installer already excludes the boot/
-    /// install medium automatically, so neither this nor --disk-filter
-    /// needs to account for it
+    /// Advanced override -- explicit disk device names (e.g. sda,sdb),
+    /// mutually exclusive with --disk-filter. Not asked in the wizard;
+    /// omit both this and --disk-filter and it defaults to "first real
+    /// disk found" automatically (confirmed safe against Proxmox's own
+    /// disk-enumeration source: already excludes loop/dm/md/ram/
+    /// optical devices and the boot/live medium regardless of bus type)
     #[arg(long, value_delimiter = ',', conflicts_with = "disk_filter")]
     pub disk: Option<Vec<String>>,
-    /// Match disks by UDEV property instead of explicit names (e.g.
-    /// ID_BUS=ata) -- mutually exclusive with --disk. Verify against
-    /// `udevadm info --query=property --name=/dev/sdX` on the real
-    /// target hardware before using; a filter broad enough to match
-    /// every intended disk (and narrow enough to exclude anything it
-    /// shouldn't) is your responsibility to get right, not something
-    /// with a safe default
+    /// Advanced override -- match disks by UDEV property instead of
+    /// explicit names (e.g. ID_BUS=ata), mutually exclusive with
+    /// --disk. Not asked in the wizard; verify against `udevadm info
+    /// --query=property --name=/dev/sdX` on the real target hardware
+    /// before using a custom filter
     #[arg(long, value_delimiter = ',')]
     pub disk_filter: Option<Vec<String>>,
     /// "any" (default) or "all" -- whether one matching filter key is
     /// enough, or every key must match. Only meaningful with --disk-filter
     #[arg(long)]
     pub disk_filter_match: Option<String>,
-    /// Reserve this many GiB on the install disk for the OS, leaving
-    /// the rest genuinely unpartitioned for storage pools created
-    /// later. Omit to consume the whole disk. Especially useful with a
-    /// broad --disk-filter matching every local disk: Proxmox
-    /// auto-picks one for the OS and leaves the rest (plus whatever
-    /// this doesn't use on the chosen disk) untouched
+    /// GiB for the OS disk -- the rest of whatever disk gets picked
+    /// (plus every other disk present) is left genuinely unpartitioned
+    /// for storage pools created later
     #[arg(long)]
     pub hdsize_gib: Option<f64>,
     #[arg(long)]
@@ -986,13 +983,26 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
 /// every intended disk depends entirely on the target hardware --
 /// there's no safe default to fall back to (see `DiskSelection`'s doc
 /// comment).
+/// `--disk`/`--disk-filter` stay available for scripting/edge cases,
+/// but the wizard no longer asks which mode to use or what criteria to
+/// type -- when neither flag is given it defaults straight to
+/// `DEVNAME = "*"`, i.e. "the first real disk". Confirmed safe against
+/// Proxmox's own disk-enumeration source (`Proxmox::Sys::Block::hd_list()`):
+/// the candidate pool it draws from already excludes loop/dm/md/ram/
+/// optical devices (by name), requires `DEVTYPE=disk` (excludes
+/// partitions), and excludes the boot/live medium via filesystem-type
+/// detection (`ID_FS_TYPE=iso9660`) -- independent of bus type, so
+/// there's no need to filter out USB specifically. The one thing this
+/// can't control is *which* real disk gets picked if more than one is
+/// present (not size- or identity-aware) -- that's what `hdsize`
+/// (prompted separately, always) is for: it doesn't matter which disk
+/// lands the OS, since its footprint is capped and every other disk
+/// is left untouched regardless.
 fn resolve_disk_selection(
     disk: Option<Vec<String>>,
     disk_filter: Option<Vec<String>>,
     disk_filter_match: Option<String>,
 ) -> Result<proxmox_iso::DiskSelection> {
-    use crate::iso::vyos_wizard as wiz;
-
     if let Some(disks) = disk {
         return Ok(proxmox_iso::DiskSelection::List(disks));
     }
@@ -1002,35 +1012,10 @@ fn resolve_disk_selection(
             filter_match: disk_filter_match,
         });
     }
-
-    if wiz::prompt_bool(
-        None,
-        "Match disks by a UDEV property filter instead of explicit device names?",
-        false,
-    )? {
-        let pairs = wiz::prompt_list(
-            None,
-            "Filter(s) as KEY=value (comma-separated, e.g. ID_BUS=ata) -- verify against \
-             `udevadm info --query=property --name=/dev/sdX` on the real box first",
-            None,
-        )?;
-        let filter_match = wiz::prompt(
-            disk_filter_match,
-            "Filter match mode (any/all)",
-            Some("any".to_string()),
-        )?;
-        Ok(proxmox_iso::DiskSelection::Filter {
-            filter: parse_disk_filter_pairs(&pairs)?,
-            filter_match: Some(filter_match),
-        })
-    } else {
-        let disks = wiz::prompt_list(
-            None,
-            "Disk(s) for the install (comma-separated, e.g. sda)",
-            None,
-        )?;
-        Ok(proxmox_iso::DiskSelection::List(disks))
-    }
+    Ok(proxmox_iso::DiskSelection::Filter {
+        filter: vec![("DEVNAME".to_string(), "*".to_string())],
+        filter_match: Some("any".to_string()),
+    })
 }
 
 fn parse_disk_filter_pairs(pairs: &[String]) -> Result<Vec<(String, String)>> {
@@ -1062,21 +1047,12 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
     let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
     let disk_selection =
         resolve_disk_selection(args.disk, args.disk_filter, args.disk_filter_match)?;
-    let hdsize_gib = match args.hdsize_gib {
-        Some(v) => Some(v),
-        None => {
-            if wiz::prompt_bool(
-                None,
-                "Reserve free space on the install disk for storage pools created later, \
-                 instead of consuming the whole disk?",
-                false,
-            )? {
-                Some(wiz::prompt(None, "GiB to reserve for the OS", Some(150.0))?)
-            } else {
-                None
-            }
-        }
-    };
+    let hdsize_gib = Some(wiz::prompt(
+        args.hdsize_gib,
+        "GiB for the OS disk (the rest of whatever disk gets picked, plus every other \
+         disk, is left untouched for storage pools created later)",
+        Some(150.0),
+    )?);
     let crow_api_url = wiz::prompt(
         args.crow_api_url,
         "crowCloud API URL (where the post-install hook checks reachability before self-electing as fleet seed)",
