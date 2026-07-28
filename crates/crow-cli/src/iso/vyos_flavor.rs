@@ -61,6 +61,13 @@ pub struct VyosFlavorConfig {
 const DETECT_TRUNK_AND_UPLINK: &str = r#"detect_trunk_and_uplink() {
     local dev iface candidates=() linked=()
 
+    # dhclient expects this to already exist (normally created by
+    # ifupdown/tmpfiles before it's invoked the usual way) -- confirmed
+    # live: calling dhclient directly on a fresh boot without it fails
+    # immediately with "run/dhclient/dhclient_<iface>.lease: No such
+    # file or directory", not a timeout, regardless of -timeout value.
+    mkdir -p /run/dhclient
+
     for dev in /sys/class/net/*/; do
         iface="$(basename "$dev")"
         [ -e "${dev}device" ] || continue
@@ -86,7 +93,15 @@ const DETECT_TRUNK_AND_UPLINK: &str = r#"detect_trunk_and_uplink() {
     local uplink_if=""
     for iface in "${linked[@]}"; do
         echo "  Probing ${iface} for a DHCP offer..." >&2
-        if timeout 10 dhclient -1 -timeout 8 "$iface" >/dev/null 2>&1; then
+        # `-timeout` is not a real dhclient CLI flag (confirmed live --
+        # ISC dhclient only supports `timeout` as a dhclient.conf
+        # directive; passing it here made dhclient mis-parse the
+        # argument list entirely, failing instantly with `Cannot find
+        # device "timeout"` regardless of the value used). The outer
+        # coreutils `timeout` is the only thing actually bounding how
+        # long this waits -- 65s gives dhclient's own default 60s
+        # internal timeout room to fire cleanly before being killed.
+        if timeout 65 dhclient -1 "$iface" >/dev/null 2>&1; then
             uplink_if="$iface"
             dhclient -r "$iface" >/dev/null 2>&1 || true
             break
@@ -169,7 +184,15 @@ VBASH
 /// enable step. Logs to a file since cron's own mail-based error
 /// reporting isn't configured on a fresh box.
 pub fn render_cron_entry() -> String {
-    "@reboot root /usr/local/bin/crowcloud-fabric-init.sh >> /var/log/crowcloud-fabric-init.log 2>&1\n"
+    // `bash` explicitly, not a direct exec -- confirmed against
+    // vyos-build's actual source (`build-vyos-image`'s `includes_chroot`
+    // handling, a plain `open(file_path, 'w')` with no `chmod`): there is
+    // no way to mark this file executable via the flavor schema, so the
+    // script always lands world-readable but not executable. A direct
+    // exec (by cron or by hand) fails with "Permission denied" regardless
+    // of file content; invoking it via `bash` sidesteps needing the
+    // execute bit at all.
+    "@reboot root bash /usr/local/bin/crowcloud-fabric-init.sh >> /var/log/crowcloud-fabric-init.log 2>&1\n"
         .to_string()
 }
 
