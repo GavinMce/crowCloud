@@ -53,6 +53,11 @@ pub struct FabricConfigureArgs {
     pub bgp_asn: Option<u32>,
     #[arg(long)]
     pub bgp_peer_password: Option<String>,
+    /// VyOS's own IP on the underlay VLAN -- the BGP route-reflector
+    /// every Proxmox host actively peers with (VyOS's own listen range
+    /// is passive-only, so this can't be discovered automatically)
+    #[arg(long)]
+    pub bgp_route_reflector_ip: Option<String>,
     #[arg(long, value_delimiter = ',')]
     pub dns_servers: Option<Vec<String>>,
 }
@@ -297,6 +302,12 @@ pub struct ProxmoxBuildArgs {
     pub admin_email: Option<String>,
     #[arg(long)]
     pub trunk_interface: Option<String>,
+    /// This host's own IP on the underlay VLAN. No IPAM allocator
+    /// exists yet (#54), so this is manual per-host input for now --
+    /// without it, this host can't form an OSPF adjacency or accept a
+    /// BGP session from VyOS's dynamic listen range at all.
+    #[arg(long)]
+    pub underlay_ip: Option<String>,
     /// Falls back to the shared fabric config (`iso fabric-configure`)
     /// if omitted
     #[arg(long)]
@@ -358,6 +369,11 @@ pub struct ProxmoxBuildArgs {
     /// Falls back to the shared fabric config if omitted
     #[arg(long)]
     pub bgp_peer_password: Option<String>,
+    /// VyOS's own underlay IP -- the BGP route-reflector this host
+    /// actively peers with. Falls back to the shared fabric config if
+    /// omitted
+    #[arg(long)]
+    pub bgp_route_reflector_ip: Option<String>,
     /// Falls back to the shared fabric config's `underlay_network_prefix`
     /// if omitted
     #[arg(long)]
@@ -461,6 +477,11 @@ fn fabric_configure(args: FabricConfigureArgs) -> Result<()> {
             .or(existing.as_ref().map(|f| f.bgp_peer_password.clone())),
         "BGP peer-group password",
     )?;
+    let bgp_route_reflector_ip = wiz::prompt(
+        args.bgp_route_reflector_ip,
+        "VyOS's own underlay IP (the BGP route-reflector every Proxmox host peers with)",
+        existing.as_ref().map(|f| f.bgp_route_reflector_ip.clone()),
+    )?;
     let dns_servers = wiz::prompt_list(
         args.dns_servers
             .or(existing.as_ref().map(|f| f.dns_servers.clone())),
@@ -481,6 +502,7 @@ fn fabric_configure(args: FabricConfigureArgs) -> Result<()> {
         ospf_area,
         bgp_asn,
         bgp_peer_password,
+        bgp_route_reflector_ip,
         dns_servers,
     });
     cfg.save()?;
@@ -572,8 +594,9 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
     )?;
     let underlay_ip = wiz::prompt(
         args.underlay_ip,
-        "Underlay loopback-facing IP (this router's own)",
-        None,
+        "Underlay loopback-facing IP (this router's own) -- also the BGP \
+         route-reflector address every Proxmox host will peer with",
+        fabric.as_ref().map(|f| f.bgp_route_reflector_ip.clone()),
     )?;
     let underlay_prefix = wiz::prompt(
         args.underlay_prefix,
@@ -787,8 +810,9 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
     )?;
     let underlay_ip = wiz::prompt(
         args.underlay_ip,
-        "Underlay loopback-facing IP (this router's own)",
-        None,
+        "Underlay loopback-facing IP (this router's own) -- also the BGP \
+         route-reflector address every Proxmox host will peer with",
+        fabric.as_ref().map(|f| f.bgp_route_reflector_ip.clone()),
     )?;
     let underlay_prefix = wiz::prompt(
         args.underlay_prefix,
@@ -1027,6 +1051,12 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         "Trunk interface (fabric NIC, e.g. eno1)",
         None,
     )?;
+    let underlay_ip = wiz::prompt(
+        args.underlay_ip,
+        "Underlay IP (this host's own -- no allocator exists yet, so pick \
+         one inside the fabric's underlay subnet by hand, e.g. 10.10.0.11)",
+        None,
+    )?;
     let mgmt_ip = wiz::prompt(args.mgmt_ip, "Management IP (this host's own)", None)?;
     let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
     let disk_selection =
@@ -1077,6 +1107,11 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
             .or(fabric.as_ref().map(|f| f.bgp_peer_password.clone())),
         "BGP peer-group password",
     )?;
+    let bgp_route_reflector_ip = wiz::prompt(
+        args.bgp_route_reflector_ip,
+        "VyOS's own underlay IP (the BGP route-reflector this host will peer with)",
+        fabric.as_ref().map(|f| f.bgp_route_reflector_ip.clone()),
+    )?;
     let underlay_prefix = wiz::prompt(
         args.underlay_prefix,
         "Underlay prefix length",
@@ -1100,6 +1135,7 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         admin_email,
         trunk_interface,
         underlay_vlan,
+        underlay_ip,
         mgmt_vlan,
         mgmt_ip,
         mgmt_prefix,
@@ -1112,6 +1148,7 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         fleet_secret,
         bgp_asn,
         bgp_peer_password,
+        bgp_route_reflector_ip,
         underlay_prefix,
         ospf_area,
     };

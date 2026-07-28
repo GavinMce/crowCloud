@@ -19,6 +19,18 @@ pub struct ProxmoxBuildConfig {
     pub admin_email: String,
     pub trunk_interface: String,
     pub underlay_vlan: u16,
+    /// This host's own IP on the underlay VLAN -- no IPAM allocator
+    /// exists yet (crowCloud/#54), so this is a manual per-host value
+    /// for now rather than something derived automatically. Without an
+    /// actual address inside the underlay subnet, this host can't form
+    /// an OSPF adjacency at all, and VyOS's BGP `listen range` (bound to
+    /// that same subnet) can never accept a session from it either --
+    /// confirmed live: an earlier version of this hook computed a
+    /// same-named variable from the trunk interface's own (nonexistent,
+    /// since the trunk only carries tagged VLAN traffic) address and
+    /// never used it anywhere, silently leaving the underlay VLAN
+    /// unconfigured entirely.
+    pub underlay_ip: String,
     pub mgmt_vlan: u16,
     pub mgmt_ip: String,
     pub mgmt_prefix: u8,
@@ -47,6 +59,10 @@ pub struct ProxmoxBuildConfig {
     pub fleet_secret: String,
     pub bgp_asn: u32,
     pub bgp_peer_password: String,
+    /// VyOS's own IP on the underlay VLAN -- see `FabricConfig`'s field
+    /// of the same name for why this host must actively dial out to it
+    /// rather than relying on VyOS's passive `bgp listen range` alone.
+    pub bgp_route_reflector_ip: String,
     pub underlay_prefix: u8,
     pub ospf_area: String,
 }
@@ -207,6 +223,7 @@ set -euo pipefail
 
 TRUNK_IF="{trunk_interface}"
 UNDERLAY_VLAN="{underlay_vlan}"
+UNDERLAY_IP="{underlay_ip}"
 MGMT_VLAN="{mgmt_vlan}"
 MGMT_IP="{mgmt_ip}"
 MGMT_PREFIX="{mgmt_prefix}"
@@ -216,6 +233,7 @@ CROW_API_URL="{crow_api_url}"
 FLEET_SECRET="{fleet_secret}"
 BGP_ASN="{bgp_asn}"
 BGP_PEER_PASSWORD="{bgp_peer_password}"
+BGP_ROUTE_REFLECTOR_IP="{bgp_route_reflector_ip}"
 UNDERLAY_PREFIX="{underlay_prefix}"
 OSPF_AREA="{ospf_area}"
 
@@ -257,13 +275,23 @@ search fleet.local
 nameserver ${{MGMT_GATEWAY}}
 RESOLV
 
-echo "==> Configuring underlay VLAN (${{TRUNK_IF}}.${{UNDERLAY_VLAN}}) + loopback"
-UNDERLAY_IP="$(ip -4 -o addr show dev "${{TRUNK_IF}}" 2>/dev/null | awk '{{print $4}}' | head -1 || true)"
-# NOTE: this host's own underlay IP isn't determined by this script --
-# it's assigned by whatever IPAM decision crowCloud/#54's Subnet
-# allocator makes for the underlay. Left as an explicit gap: the real
-# value needs to come from somewhere (a build-time flag once #54 exists,
-# or a pre-underlay-network DHCP reservation) rather than guessed here.
+echo "==> Configuring underlay VLAN (${{TRUNK_IF}}.${{UNDERLAY_VLAN}})"
+cat >> /etc/network/interfaces <<IFACES
+
+auto ${{TRUNK_IF}}.${{UNDERLAY_VLAN}}
+iface ${{TRUNK_IF}}.${{UNDERLAY_VLAN}} inet static
+    address ${{UNDERLAY_IP}}/${{UNDERLAY_PREFIX}}
+    mtu ${{TRUNK_MTU}}
+IFACES
+
+ifup "${{TRUNK_IF}}.${{UNDERLAY_VLAN}}" || true
+
+# NOTE: no loopback (VTEP source / stable router-id) is configured for
+# this host, unlike VyOS's own build -- FRR falls back to the highest
+# active interface address for its router-id absent one, which works
+# for basic OSPF/BGP adjacency but isn't stable across interface
+# changes. Left as a gap pending real VXLAN/EVPN wiring on the Proxmox
+# side, not needed just to get a peering session up.
 
 echo "==> Configuring FRR (OSPF underlay + BGP EVPN dynamic peer)"
 # Confirmed live: an earlier version of this hook assumed a per-app
@@ -282,6 +310,7 @@ router bgp ${{BGP_ASN}}
  neighbor FABRIC peer-group
  neighbor FABRIC remote-as internal
  neighbor FABRIC password ${{BGP_PEER_PASSWORD}}
+ neighbor ${{BGP_ROUTE_REFLECTOR_IP}} peer-group FABRIC
  address-family l2vpn evpn
   neighbor FABRIC activate
  exit-address-family
@@ -357,8 +386,14 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
         --filename "crowcloud-seed-base.qcow2"
 
     echo "==> Creating seed VM ${{SEED_VMID}} from that image (guest, not the bare host OS)"
+    # Tagged onto MGMT_VLAN explicitly -- vmbr0 carries the trunk
+    # untagged/native, and the host's own mgmt access is a tagged VLAN
+    # subinterface on top of it (see ${{TRUNK_IF}}.${{MGMT_VLAN}} above), so
+    # a guest NIC on vmbr0 with no tag lands on the wrong L2 segment
+    # entirely -- it would never have reached MGMT_GATEWAY regardless of
+    # what IP it was given.
     qm create "${{SEED_VMID}}" --name crowcloud-seed --memory 4096 --cores 2 \
-        --net0 "virtio,bridge=${{DEFAULT_BRIDGE}}" --scsihw virtio-scsi-pci \
+        --net0 "virtio,bridge=${{DEFAULT_BRIDGE}},tag=${{MGMT_VLAN}}" --scsihw virtio-scsi-pci \
         --ostype l26
     # Confirmed live: hardcoding the default directory storage's import
     # path broke on this host's real (different) storage backend with
@@ -380,9 +415,23 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
 {seed_cloud_init}
 CLOUDINIT
 
+    # A DHCP-assigned seed IP would be unknowable in advance, but every
+    # future host's post-install hook is baked with this same
+    # CROW_API_URL to find crowCloud at -- the two have to agree, so the
+    # seed's own address is derived from CROW_API_URL itself rather than
+    # left to chance. Requires CROW_API_URL's host to be an IPv4 literal
+    # (not a DNS name) for this self-election path specifically, since
+    # there's no DNS server for the guest to resolve a name against yet
+    # at this point in the bootstrap.
+    SEED_STATIC_IP="$(echo "${{CROW_API_URL}}" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[/:].*##')"
+    if ! [[ "${{SEED_STATIC_IP}}" =~ ^([0-9]{{1,3}}\.){{3}}[0-9]{{1,3}}$ ]]; then
+        echo "==> CROW_API_URL (${{CROW_API_URL}}) does not resolve to an IPv4 literal host -- cannot assign the seed VM a matching static IP. Use an IP literal (e.g. http://${{MGMT_GATEWAY%.*}}.50:8080) instead of a hostname for the first/seed build." >&2
+        exit 1
+    fi
+
     qm set "${{SEED_VMID}}" \
         --cicustom "user=local:snippets/crowcloud-seed-${{SEED_VMID}}.yaml" \
-        --ipconfig0 "ip=dhcp"
+        --ipconfig0 "ip=${{SEED_STATIC_IP}}/${{MGMT_PREFIX}},gw=${{MGMT_GATEWAY}}"
     qm start "${{SEED_VMID}}"
 
     # NOTE: this kicks the seed deployment off and returns -- it does not
@@ -416,6 +465,7 @@ fi
 "#,
         trunk_interface = cfg.trunk_interface,
         underlay_vlan = cfg.underlay_vlan,
+        underlay_ip = cfg.underlay_ip,
         mgmt_vlan = cfg.mgmt_vlan,
         mgmt_ip = cfg.mgmt_ip,
         mgmt_prefix = cfg.mgmt_prefix,
@@ -425,6 +475,7 @@ fi
         fleet_secret = cfg.fleet_secret,
         bgp_asn = cfg.bgp_asn,
         bgp_peer_password = cfg.bgp_peer_password,
+        bgp_route_reflector_ip = cfg.bgp_route_reflector_ip,
         underlay_prefix = cfg.underlay_prefix,
         ospf_area = cfg.ospf_area,
         seed_cloud_init = seed_cloud_init,
@@ -442,6 +493,7 @@ mod tests {
             admin_email: "admin@fleet.local".into(),
             trunk_interface: "eth0".into(),
             underlay_vlan: 10,
+            underlay_ip: "10.255.10.11".into(),
             mgmt_vlan: 20,
             mgmt_ip: "10.255.20.11".into(),
             mgmt_prefix: 24,
@@ -454,6 +506,7 @@ mod tests {
             fleet_secret: "fleet-secret-abc".into(),
             bgp_asn: 65000,
             bgp_peer_password: "fabric-secret".into(),
+            bgp_route_reflector_ip: "10.255.10.1".into(),
             underlay_prefix: 24,
             ospf_area: "0".into(),
         }
@@ -607,12 +660,40 @@ mod tests {
     }
 
     #[test]
+    fn hook_actively_peers_with_vyos_instead_of_leaving_the_peer_group_unbound() {
+        // Confirmed live: VyOS's own `bgp listen range` is passive-only
+        // (accepts incoming connections, never dials out). A `FABRIC`
+        // peer-group template alone -- remote-as/password/activate, but
+        // never bound to an actual neighbor address -- never originates
+        // a connection either, so with both sides passive, no BGP
+        // session forms despite OSPF working fine over the same subnet.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("BGP_ROUTE_REFLECTOR_IP=\"10.255.10.1\""));
+        assert!(out.contains("neighbor ${BGP_ROUTE_REFLECTOR_IP} peer-group FABRIC"));
+    }
+
+    #[test]
     fn hook_actually_brings_up_the_management_vlan_interface() {
         // Confirmed live: writing to /etc/network/interfaces alone
         // doesn't bring the interface up -- it silently stayed absent
         // from `ip a` until an explicit ifup was added here.
         let out = render_post_install_hook(&cfg());
         assert!(out.contains("ifup \"${TRUNK_IF}.${MGMT_VLAN}\""));
+    }
+
+    #[test]
+    fn hook_actually_configures_the_underlay_vlan_interface() {
+        // Confirmed live: an earlier version of this hook computed an
+        // UNDERLAY_IP variable from the trunk interface's own (nonexistent)
+        // address and never used it anywhere -- the underlay VLAN was
+        // never actually created, so the host could never form an OSPF
+        // adjacency or accept a BGP session from VyOS's listen range
+        // bound to that subnet.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("auto ${TRUNK_IF}.${UNDERLAY_VLAN}"));
+        assert!(out.contains("address ${UNDERLAY_IP}/${UNDERLAY_PREFIX}"));
+        assert!(out.contains("ifup \"${TRUNK_IF}.${UNDERLAY_VLAN}\""));
+        assert!(out.contains("10.255.10.11"));
     }
 
     #[test]
@@ -673,6 +754,50 @@ mod tests {
         let out = render_post_install_hook(&cfg());
         assert!(out.contains(r#"pvesm path "${IMPORT_STORAGE}:import/crowcloud-seed-base.qcow2""#));
         assert!(!out.contains("/var/lib/vz/import/"));
+    }
+
+    #[test]
+    fn hook_tags_the_seed_vm_onto_the_mgmt_vlan_not_untagged_vmbr0() {
+        // vmbr0 carries the trunk untagged -- the host's own mgmt access
+        // is a tagged VLAN subinterface on top of it, so a guest NIC on
+        // vmbr0 with no tag lands on the wrong L2 segment and can never
+        // reach MGMT_GATEWAY, regardless of what IP it's given.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains(r#"--net0 "virtio,bridge=${DEFAULT_BRIDGE},tag=${MGMT_VLAN}""#));
+    }
+
+    #[test]
+    fn hook_derives_seed_static_ip_from_crow_api_url_instead_of_dhcp() {
+        // A DHCP-assigned seed IP is unknowable in advance, but every
+        // future host's hook is baked with this same CROW_API_URL to find
+        // crowCloud at -- the two must agree, so the seed's address comes
+        // from CROW_API_URL itself rather than whatever DHCP hands out.
+        let cfg = ProxmoxBuildConfig {
+            crow_api_url: "http://10.255.20.50:8080".into(),
+            ..cfg()
+        };
+        let out = render_post_install_hook(&cfg);
+        assert!(!out.contains("ip=dhcp"));
+        assert!(
+            out.contains(r#"--ipconfig0 "ip=${SEED_STATIC_IP}/${MGMT_PREFIX},gw=${MGMT_GATEWAY}""#)
+        );
+        assert!(out.contains("10.255.20.50"));
+    }
+
+    #[test]
+    fn hook_guards_against_a_crow_api_url_that_isnt_an_ipv4_literal() {
+        // This is a runtime bash check, not something the renderer
+        // evaluates -- present in the output regardless of cfg's actual
+        // value. The seed VM can't resolve a DNS name against anything
+        // yet at this point in its own bootstrap, so a non-IP-literal
+        // CROW_API_URL must fail loudly with a clear fix instead of
+        // silently falling back to DHCP (which would just reintroduce
+        // the mismatch this whole thing exists to prevent).
+        let out = render_post_install_hook(&cfg());
+        assert!(out
+            .contains(r#"if ! [[ "${SEED_STATIC_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then"#));
+        assert!(out.contains("does not resolve to an IPv4 literal host"));
+        assert!(out.contains("exit 1"));
     }
 
     #[test]
