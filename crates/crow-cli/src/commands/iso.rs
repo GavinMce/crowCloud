@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::Config;
-use crate::iso::{proxmox as proxmox_iso, vyos as vyos_iso};
+use crate::iso::fabric::FabricConfig;
+use crate::iso::{proxmox as proxmox_iso, vyos as vyos_iso, vyos_flavor as vyos_flavor_iso};
 
 #[derive(Args)]
 pub struct IsoCmd {
@@ -18,6 +19,42 @@ pub enum IsoSubcommand {
     Vyos(VyosCmd),
     /// Build a pre-baked Proxmox VE image (#66)
     Proxmox(Box<ProxmoxCmd>),
+    /// Configure fabric-wide network settings once, shared by every
+    /// `iso vyos`/`iso proxmox` build command afterwards (#66) --
+    /// values like the BGP peer password or VLAN IDs have to match
+    /// exactly across every host, so this is the single place they get
+    /// typed instead of once per build
+    FabricConfigure(Box<FabricConfigureArgs>),
+}
+
+#[derive(Args)]
+pub struct FabricConfigureArgs {
+    #[arg(long)]
+    pub underlay_vlan: Option<u16>,
+    #[arg(long)]
+    pub underlay_network: Option<String>,
+    #[arg(long)]
+    pub underlay_network_prefix: Option<u8>,
+    #[arg(long)]
+    pub mgmt_vlan: Option<u16>,
+    #[arg(long)]
+    pub mgmt_network: Option<String>,
+    #[arg(long)]
+    pub mgmt_network_prefix: Option<u8>,
+    /// VyOS's own IP on the mgmt VLAN -- also every Proxmox host's
+    /// default gateway on that VLAN
+    #[arg(long)]
+    pub mgmt_gateway: Option<String>,
+    #[arg(long)]
+    pub trunk_mtu: Option<u32>,
+    #[arg(long)]
+    pub ospf_area: Option<String>,
+    #[arg(long)]
+    pub bgp_asn: Option<u32>,
+    #[arg(long)]
+    pub bgp_peer_password: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub dns_servers: Option<Vec<String>>,
 }
 
 #[derive(Args)]
@@ -28,12 +65,38 @@ pub struct VyosCmd {
 
 #[derive(Subcommand)]
 pub enum VyosSubcommand {
-    Build(Box<VyosBuildArgs>),
+    /// Render fabric config, either as a one-shot script or baked into
+    /// a custom image (#66)
+    Build(VyosBuildCmd),
     /// Apply a rendered configure.txt to a live VyOS device over SSH
     /// (#66) -- VyOS has no unattended install mode, so a router still
     /// needs one interactive `install image` session per box; this
     /// automates the fabric-config step that comes after that
     Apply(VyosApplyArgs),
+}
+
+#[derive(Args)]
+pub struct VyosBuildCmd {
+    #[command(subcommand)]
+    pub command: VyosBuildSubcommand,
+}
+
+#[derive(Subcommand)]
+pub enum VyosBuildSubcommand {
+    /// Render configure.txt -- a one-shot script meant to be applied
+    /// to an already-installed, already-running VyOS box (by hand, or
+    /// via `iso vyos apply`). Interfaces are identified by static
+    /// kernel-assigned name
+    Config(Box<VyosBuildArgs>),
+    /// Render the inputs to bake a custom, self-configuring VyOS image
+    /// via vyos-build (#63) -- once flashed, the box applies its
+    /// fabric config on every boot with no `iso vyos apply` step
+    /// needed afterward. Interfaces are identified by PCI bus address
+    /// instead of kernel name, resolved dynamically at boot, so it
+    /// survives a NIC swap. Neither this nor `config` touches VyOS's
+    /// own `install image` step -- there's no unattended install mode
+    /// regardless of image customization
+    Image(Box<VyosFlavorArgs>),
 }
 
 #[derive(Args)]
@@ -61,6 +124,64 @@ pub struct VyosApplyArgs {
 }
 
 #[derive(Args)]
+pub struct VyosFlavorArgs {
+    #[arg(long)]
+    pub hostname: Option<String>,
+    #[arg(long)]
+    pub trunk_mtu: Option<u32>,
+    #[arg(long, requires = "trunk_duplex")]
+    pub trunk_speed: Option<String>,
+    #[arg(long, requires = "trunk_speed")]
+    pub trunk_duplex: Option<String>,
+    #[arg(long)]
+    pub underlay_vlan: Option<u16>,
+    #[arg(long)]
+    pub underlay_ip: Option<String>,
+    #[arg(long)]
+    pub underlay_prefix: Option<u8>,
+    #[arg(long)]
+    pub mgmt_vlan: Option<u16>,
+    #[arg(long)]
+    pub mgmt_ip: Option<String>,
+    #[arg(long)]
+    pub mgmt_prefix: Option<u8>,
+    #[arg(long)]
+    pub mgmt_network: Option<String>,
+    #[arg(long)]
+    pub mgmt_network_prefix: Option<u8>,
+    #[arg(long)]
+    pub loopback_ip: Option<String>,
+    #[arg(long)]
+    pub uplink_dhcp: Option<bool>,
+    #[arg(long)]
+    pub uplink_ip: Option<String>,
+    #[arg(long)]
+    pub uplink_prefix: Option<u8>,
+    #[arg(long)]
+    pub uplink_gateway: Option<String>,
+    #[arg(long)]
+    pub ospf_area: Option<String>,
+    #[arg(long)]
+    pub underlay_network: Option<String>,
+    #[arg(long)]
+    pub underlay_network_prefix: Option<u8>,
+    #[arg(long)]
+    pub ssh_pubkey: Option<PathBuf>,
+    #[arg(long)]
+    pub bgp_asn: Option<u32>,
+    #[arg(long)]
+    pub bgp_peer_password: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub dns_servers: Option<Vec<String>>,
+    #[arg(long)]
+    pub allow_password_auth: Option<bool>,
+    /// Directory to write the rendered fabric-init script, cron entry,
+    /// and vyos-build flavor TOML into
+    #[arg(long, default_value = "./build")]
+    pub out: PathBuf,
+}
+
+#[derive(Args)]
 pub struct ProxmoxCmd {
     #[command(subcommand)]
     pub command: ProxmoxSubcommand,
@@ -71,77 +192,88 @@ pub enum ProxmoxSubcommand {
     Build(ProxmoxBuildArgs),
 }
 
+/// Every field without a sensible fallback is `Option` -- omitted on
+/// the command line, it's prompted for interactively instead of clap
+/// erroring "required argument missing". Running with zero flags is a
+/// full wizard walkthrough; running with every flag is unchanged from
+/// before interactive mode existed (#66).
 #[derive(Args)]
 pub struct VyosBuildArgs {
     #[arg(long)]
-    pub hostname: String,
+    pub hostname: Option<String>,
     /// Physical NIC carrying the tagged trunk to the switch (underlay + management VLANs)
     #[arg(long)]
-    pub trunk_interface: String,
+    pub trunk_interface: Option<String>,
     /// Physical NIC used for internet/LAN uplink
     #[arg(long)]
-    pub uplink_interface: String,
-    #[arg(long, default_value_t = 9000)]
-    pub trunk_mtu: u32,
+    pub uplink_interface: Option<String>,
     #[arg(long)]
-    pub underlay_vlan: u16,
+    pub trunk_mtu: Option<u32>,
+    /// Pin the trunk to a fixed speed instead of auto-negotiation --
+    /// requires --trunk-duplex too
+    #[arg(long, requires = "trunk_duplex")]
+    pub trunk_speed: Option<String>,
+    #[arg(long, requires = "trunk_speed")]
+    pub trunk_duplex: Option<String>,
     #[arg(long)]
-    pub underlay_ip: String,
-    #[arg(long, default_value_t = 24)]
-    pub underlay_prefix: u8,
+    pub underlay_vlan: Option<u16>,
     #[arg(long)]
-    pub mgmt_vlan: u16,
+    pub underlay_ip: Option<String>,
     #[arg(long)]
-    pub mgmt_ip: String,
-    #[arg(long, default_value_t = 24)]
-    pub mgmt_prefix: u8,
+    pub underlay_prefix: Option<u8>,
+    #[arg(long)]
+    pub mgmt_vlan: Option<u16>,
+    #[arg(long)]
+    pub mgmt_ip: Option<String>,
+    #[arg(long)]
+    pub mgmt_prefix: Option<u8>,
     /// Network address of the mgmt subnet (not this router's own IP)
     /// -- used for the NAT masquerade and DNS-forwarding allow-from
     /// rules that give mgmt-VLAN hosts internet egress
     #[arg(long)]
-    pub mgmt_network: String,
-    #[arg(long, default_value_t = 24)]
-    pub mgmt_network_prefix: u8,
+    pub mgmt_network: Option<String>,
     #[arg(long)]
-    pub loopback_ip: String,
+    pub mgmt_network_prefix: Option<u8>,
     #[arg(long)]
-    pub uplink_dhcp: bool,
+    pub loopback_ip: Option<String>,
+    #[arg(long)]
+    pub uplink_dhcp: Option<bool>,
     #[arg(long)]
     pub uplink_ip: Option<String>,
     #[arg(long)]
     pub uplink_prefix: Option<u8>,
     #[arg(long)]
     pub uplink_gateway: Option<String>,
-    #[arg(long, default_value = "0")]
-    pub ospf_area: String,
     #[arg(long)]
-    pub underlay_network: String,
-    #[arg(long, default_value_t = 24)]
-    pub underlay_network_prefix: u8,
+    pub ospf_area: Option<String>,
+    #[arg(long)]
+    pub underlay_network: Option<String>,
+    #[arg(long)]
+    pub underlay_network_prefix: Option<u8>,
     /// Path to a public key file -- image is built SSH-key-only, never
     /// with a baked password
     #[arg(long)]
-    pub ssh_pubkey: PathBuf,
-    #[arg(long, default_value_t = 65000)]
-    pub bgp_asn: u32,
+    pub ssh_pubkey: Option<PathBuf>,
+    #[arg(long)]
+    pub bgp_asn: Option<u32>,
     /// Shared secret for BGP peer-group auth -- must match every Proxmox
     /// host's `--bgp-peer-password` (#66)
     #[arg(long)]
-    pub bgp_peer_password: String,
+    pub bgp_peer_password: Option<String>,
     /// Recursive DNS forwarders for mgmt-VLAN hosts. Not every public
     /// resolver is reachable from every network (confirmed live: 9.9.9.9
     /// and 1.1.1.1 both timed out on one real deployment while 8.8.8.8
     /// worked), so this is overridable rather than a single hardcoded
     /// default baked in unconditionally
-    #[arg(long, value_delimiter = ',', default_values_t = ["8.8.8.8".to_string(), "8.8.4.4".to_string()])]
-    pub dns_servers: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub dns_servers: Option<Vec<String>>,
     /// Keep SSH password auth enabled alongside the new key, instead of
     /// disabling it. Default is key-only; use this while validating key
     /// access on a given box, since a bad key commit + disabled password
     /// auth means an SSH lockout with no fallback (see #66's incident
     /// notes)
     #[arg(long)]
-    pub allow_password_auth: bool,
+    pub allow_password_auth: Option<bool>,
     /// Directory to write the rendered configure-script into
     #[arg(long, default_value = "./build")]
     pub out: PathBuf,
@@ -155,50 +287,84 @@ pub struct ProxmoxBuildArgs {
     /// Plaintext root password -- hashed locally via `openssl passwd -6`
     /// before it ever touches disk; never stored or logged in plaintext
     #[arg(long)]
-    pub root_password: String,
+    pub root_password: Option<String>,
     #[arg(long)]
-    pub fqdn: String,
+    pub fqdn: Option<String>,
     /// Required by answer.toml's [global] section -- confirmed live
     /// against proxmox-auto-install-assistant, no default offered since
     /// there's no sensible one
     #[arg(long)]
-    pub admin_email: String,
+    pub admin_email: Option<String>,
     #[arg(long)]
-    pub trunk_interface: String,
+    pub trunk_interface: Option<String>,
+    /// Falls back to the shared fabric config (`iso fabric-configure`)
+    /// if omitted
     #[arg(long)]
-    pub underlay_vlan: u16,
+    pub underlay_vlan: Option<u16>,
+    /// Falls back to the shared fabric config if omitted
     #[arg(long)]
-    pub mgmt_vlan: u16,
+    pub mgmt_vlan: Option<u16>,
     #[arg(long)]
-    pub mgmt_ip: String,
-    #[arg(long, default_value_t = 24)]
-    pub mgmt_prefix: u8,
+    pub mgmt_ip: Option<String>,
     #[arg(long)]
-    pub mgmt_gateway: String,
-    #[arg(long, default_value_t = 9000)]
-    pub trunk_mtu: u32,
+    pub mgmt_prefix: Option<u8>,
+    /// This host's default gateway on the mgmt VLAN -- falls back to
+    /// the shared fabric config's `mgmt_gateway` (VyOS's own mgmt IP)
+    /// if omitted
+    #[arg(long)]
+    pub mgmt_gateway: Option<String>,
+    /// Falls back to the shared fabric config if omitted
+    #[arg(long)]
+    pub trunk_mtu: Option<u32>,
+    /// Advanced override -- explicit disk device names (e.g. sda,sdb),
+    /// mutually exclusive with --disk-filter. Not asked in the wizard;
+    /// omit both this and --disk-filter and it defaults to "first real
+    /// disk found" automatically (confirmed safe against Proxmox's own
+    /// disk-enumeration source: already excludes loop/dm/md/ram/
+    /// optical devices and the boot/live medium regardless of bus type)
+    #[arg(long, value_delimiter = ',', conflicts_with = "disk_filter")]
+    pub disk: Option<Vec<String>>,
+    /// Advanced override -- match disks by UDEV property instead of
+    /// explicit names (e.g. ID_BUS=ata), mutually exclusive with
+    /// --disk. Not asked in the wizard; verify against `udevadm info
+    /// --query=property --name=/dev/sdX` on the real target hardware
+    /// before using a custom filter
     #[arg(long, value_delimiter = ',')]
-    pub disk: Vec<String>,
+    pub disk_filter: Option<Vec<String>>,
+    /// "any" (default) or "all" -- whether one matching filter key is
+    /// enough, or every key must match. Only meaningful with --disk-filter
+    #[arg(long)]
+    pub disk_filter_match: Option<String>,
+    /// GiB for the OS disk -- the rest of whatever disk gets picked
+    /// (plus every other disk present) is left genuinely unpartitioned
+    /// for storage pools created later
+    #[arg(long)]
+    pub hdsize_gib: Option<f64>,
     #[arg(long)]
     pub zfs_raid: Option<String>,
     /// Where the post-install hook looks for a reachable crowCloud
     /// instance before self-electing as the fleet seed (#67)
     #[arg(long)]
-    pub crow_api_url: String,
+    pub crow_api_url: Option<String>,
     /// Baked into the image as the self-registration credential.
     /// Defaults to the locally cached fleet secret, generating one on
     /// first use if none exists yet -- no crowCloud login required
     /// (#67's bootstrap case)
     #[arg(long)]
     pub fleet_secret: Option<String>,
-    #[arg(long, default_value_t = 65000)]
-    pub bgp_asn: u32,
+    /// Falls back to the shared fabric config if omitted
     #[arg(long)]
-    pub bgp_peer_password: String,
-    #[arg(long, default_value_t = 24)]
-    pub underlay_prefix: u8,
-    #[arg(long, default_value = "0")]
-    pub ospf_area: String,
+    pub bgp_asn: Option<u32>,
+    /// Falls back to the shared fabric config if omitted
+    #[arg(long)]
+    pub bgp_peer_password: Option<String>,
+    /// Falls back to the shared fabric config's `underlay_network_prefix`
+    /// if omitted
+    #[arg(long)]
+    pub underlay_prefix: Option<u8>,
+    /// Falls back to the shared fabric config if omitted
+    #[arg(long)]
+    pub ospf_area: Option<String>,
     /// A locally-provided Proxmox VE ISO -- never auto-downloaded
     #[arg(long)]
     pub base_iso: Option<PathBuf>,
@@ -213,13 +379,118 @@ pub struct ProxmoxBuildArgs {
 pub async fn run(cmd: IsoCmd) -> Result<()> {
     match cmd.command {
         IsoSubcommand::Vyos(vyos_cmd) => match vyos_cmd.command {
-            VyosSubcommand::Build(args) => build_vyos(*args),
+            VyosSubcommand::Build(build_cmd) => match build_cmd.command {
+                VyosBuildSubcommand::Config(args) => build_vyos(*args),
+                VyosBuildSubcommand::Image(args) => flavor_vyos(*args),
+            },
             VyosSubcommand::Apply(args) => apply_vyos(args).await,
         },
         IsoSubcommand::Proxmox(proxmox_cmd) => match proxmox_cmd.command {
             ProxmoxSubcommand::Build(args) => build_proxmox(args),
         },
+        IsoSubcommand::FabricConfigure(args) => fabric_configure(*args),
     }
+}
+
+fn fabric_configure(args: FabricConfigureArgs) -> Result<()> {
+    use crate::iso::vyos_wizard as wiz;
+
+    let existing = Config::load()?.fabric;
+
+    let underlay_vlan = wiz::prompt(
+        args.underlay_vlan,
+        "Underlay VLAN ID",
+        existing.as_ref().map(|f| f.underlay_vlan),
+    )?;
+    let underlay_network = wiz::prompt(
+        args.underlay_network,
+        "Underlay network address",
+        existing.as_ref().map(|f| f.underlay_network.clone()),
+    )?;
+    let underlay_network_prefix = wiz::prompt(
+        args.underlay_network_prefix,
+        "Underlay network prefix length",
+        existing
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
+    )?;
+    let mgmt_vlan = wiz::prompt(
+        args.mgmt_vlan,
+        "Management VLAN ID",
+        existing.as_ref().map(|f| f.mgmt_vlan),
+    )?;
+    let mgmt_network = wiz::prompt(
+        args.mgmt_network,
+        "Management subnet network address",
+        existing.as_ref().map(|f| f.mgmt_network.clone()),
+    )?;
+    let mgmt_network_prefix = wiz::prompt(
+        args.mgmt_network_prefix,
+        "Management subnet prefix length",
+        existing
+            .as_ref()
+            .map(|f| f.mgmt_network_prefix)
+            .or(Some(24)),
+    )?;
+    let mgmt_gateway = wiz::prompt(
+        args.mgmt_gateway,
+        "Management gateway IP (VyOS's own IP on the mgmt VLAN)",
+        existing.as_ref().map(|f| f.mgmt_gateway.clone()),
+    )?;
+    let trunk_mtu = wiz::prompt(
+        args.trunk_mtu,
+        "Trunk MTU",
+        existing.as_ref().map(|f| f.trunk_mtu).or(Some(9000)),
+    )?;
+    let ospf_area = wiz::prompt(
+        args.ospf_area,
+        "OSPF area",
+        existing
+            .as_ref()
+            .map(|f| f.ospf_area.clone())
+            .or(Some("0".to_string())),
+    )?;
+    let bgp_asn = wiz::prompt(
+        args.bgp_asn,
+        "BGP ASN",
+        existing.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
+    )?;
+    let bgp_peer_password = wiz::prompt_secret(
+        args.bgp_peer_password
+            .or(existing.as_ref().map(|f| f.bgp_peer_password.clone())),
+        "BGP peer-group password",
+    )?;
+    let dns_servers = wiz::prompt_list(
+        args.dns_servers
+            .or(existing.as_ref().map(|f| f.dns_servers.clone())),
+        "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
+        Some(&["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
+    )?;
+
+    let mut cfg = Config::load()?;
+    cfg.fabric = Some(FabricConfig {
+        underlay_vlan,
+        underlay_network,
+        underlay_network_prefix,
+        mgmt_vlan,
+        mgmt_network,
+        mgmt_network_prefix,
+        mgmt_gateway,
+        trunk_mtu,
+        ospf_area,
+        bgp_asn,
+        bgp_peer_password,
+        dns_servers,
+    });
+    cfg.save()?;
+
+    println!("Saved fabric config to {}", Config::path().display());
+    println!(
+        "`iso vyos build`, `iso vyos flavor`, and `iso proxmox build` will use these values \
+         automatically -- pass a flag explicitly on any of them to override just that one field."
+    );
+    Ok(())
 }
 
 async fn apply_vyos(args: VyosApplyArgs) -> Result<()> {
@@ -248,48 +519,199 @@ async fn apply_vyos(args: VyosApplyArgs) -> Result<()> {
 }
 
 fn build_vyos(args: VyosBuildArgs) -> Result<()> {
-    let ssh_pubkey = std::fs::read_to_string(&args.ssh_pubkey)
-        .with_context(|| format!("reading SSH public key at {}", args.ssh_pubkey.display()))?
-        .trim()
-        .to_string();
+    use crate::iso::vyos_wizard as wiz;
+    let fabric = Config::load()?.fabric;
 
-    if args.uplink_dhcp {
+    let hostname = wiz::prompt(args.hostname, "Hostname", None)?;
+    let trunk_interface = wiz::prompt(
+        args.trunk_interface,
+        "Trunk interface (fabric NIC, e.g. eth1)",
+        None,
+    )?;
+    let uplink_interface = wiz::prompt(
+        args.uplink_interface,
+        "Uplink interface (internet/LAN NIC, e.g. eth2)",
+        None,
+    )?;
+    let trunk_mtu = wiz::prompt(
+        args.trunk_mtu,
+        "Trunk MTU",
+        fabric.as_ref().map(|f| f.trunk_mtu).or(Some(9000)),
+    )?;
+
+    let (trunk_speed, trunk_duplex) = match (args.trunk_speed, args.trunk_duplex) {
+        (Some(s), Some(d)) => (Some(s), Some(d)),
+        _ => {
+            if wiz::prompt_bool(
+                None,
+                "Pin the trunk to a fixed speed instead of auto-negotiation?",
+                false,
+            )? {
+                (
+                    Some(wiz::prompt(
+                        None,
+                        "Trunk speed (10/100/1000/2500/5000/10000/...)",
+                        Some("1000".to_string()),
+                    )?),
+                    Some(wiz::prompt(
+                        None,
+                        "Trunk duplex (full/half)",
+                        Some("full".to_string()),
+                    )?),
+                )
+            } else {
+                (None, None)
+            }
+        }
+    };
+
+    let underlay_vlan = wiz::prompt(
+        args.underlay_vlan,
+        "Underlay VLAN ID",
+        fabric.as_ref().map(|f| f.underlay_vlan),
+    )?;
+    let underlay_ip = wiz::prompt(
+        args.underlay_ip,
+        "Underlay loopback-facing IP (this router's own)",
+        None,
+    )?;
+    let underlay_prefix = wiz::prompt(
+        args.underlay_prefix,
+        "Underlay prefix length",
+        fabric
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
+    )?;
+    let mgmt_vlan = wiz::prompt(
+        args.mgmt_vlan,
+        "Management VLAN ID",
+        fabric.as_ref().map(|f| f.mgmt_vlan),
+    )?;
+    // VyOS's own mgmt IP *is* the fabric's mgmt_gateway (every Proxmox
+    // host's default gateway on that VLAN points at it), so the stored
+    // fabric config's mgmt_gateway is exactly the right default here.
+    let mgmt_ip = wiz::prompt(
+        args.mgmt_ip,
+        "Management IP (this router's own)",
+        fabric.as_ref().map(|f| f.mgmt_gateway.clone()),
+    )?;
+    let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
+    let mgmt_network = wiz::prompt(
+        args.mgmt_network,
+        "Management subnet network address (not this router's own IP)",
+        fabric.as_ref().map(|f| f.mgmt_network.clone()),
+    )?;
+    let mgmt_network_prefix = wiz::prompt(
+        args.mgmt_network_prefix,
+        "Management subnet prefix length",
+        fabric.as_ref().map(|f| f.mgmt_network_prefix).or(Some(24)),
+    )?;
+    let loopback_ip = wiz::prompt(
+        args.loopback_ip,
+        "Loopback IP (VTEP source / BGP router-id)",
+        None,
+    )?;
+
+    let uplink_dhcp = wiz::prompt_bool(args.uplink_dhcp, "Use DHCP for the uplink?", false)?;
+    let (uplink_ip, uplink_prefix, uplink_gateway) = if uplink_dhcp {
         if args.uplink_ip.is_some() || args.uplink_prefix.is_some() || args.uplink_gateway.is_some()
         {
             bail!(
                 "--uplink-dhcp is incompatible with --uplink-ip/--uplink-prefix/--uplink-gateway"
             );
         }
-    } else if args.uplink_ip.is_none() || args.uplink_prefix.is_none() {
-        bail!("either --uplink-dhcp or both --uplink-ip and --uplink-prefix are required");
-    }
+        (None, None, None)
+    } else {
+        (
+            Some(wiz::prompt(args.uplink_ip, "Uplink IP", None)?),
+            Some(wiz::prompt(
+                args.uplink_prefix,
+                "Uplink prefix length",
+                Some(24),
+            )?),
+            wiz::prompt_optional(args.uplink_gateway, "Uplink gateway")?,
+        )
+    };
+
+    let ospf_area = wiz::prompt(
+        args.ospf_area,
+        "OSPF area",
+        fabric
+            .as_ref()
+            .map(|f| f.ospf_area.clone())
+            .or(Some("0".to_string())),
+    )?;
+    let underlay_network = wiz::prompt(
+        args.underlay_network,
+        "Underlay network address",
+        fabric.as_ref().map(|f| f.underlay_network.clone()),
+    )?;
+    let underlay_network_prefix = wiz::prompt(
+        args.underlay_network_prefix,
+        "Underlay network prefix length",
+        fabric
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
+    )?;
+
+    let ssh_pubkey_path = wiz::prompt_path(args.ssh_pubkey, "Path to SSH public key file")?;
+    let ssh_pubkey = std::fs::read_to_string(&ssh_pubkey_path)
+        .with_context(|| format!("reading SSH public key at {}", ssh_pubkey_path.display()))?
+        .trim()
+        .to_string();
+
+    let bgp_asn = wiz::prompt(
+        args.bgp_asn,
+        "BGP ASN",
+        fabric.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
+    )?;
+    let bgp_peer_password = wiz::prompt_secret(
+        args.bgp_peer_password
+            .or(fabric.as_ref().map(|f| f.bgp_peer_password.clone())),
+        "BGP peer-group password",
+    )?;
+    let dns_servers = wiz::prompt_list(
+        args.dns_servers
+            .or(fabric.as_ref().map(|f| f.dns_servers.clone())),
+        "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
+        Some(&["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
+    )?;
+    let allow_password_auth = wiz::prompt_bool(
+        args.allow_password_auth,
+        "Keep SSH password auth enabled alongside the key? (recovery fallback, not the default)",
+        false,
+    )?;
 
     let cfg = vyos_iso::VyosBuildConfig {
-        hostname: args.hostname,
-        trunk_interface: args.trunk_interface,
-        uplink_interface: args.uplink_interface,
-        trunk_mtu: args.trunk_mtu,
-        underlay_vlan: args.underlay_vlan,
-        underlay_ip: args.underlay_ip,
-        underlay_prefix: args.underlay_prefix,
-        mgmt_vlan: args.mgmt_vlan,
-        mgmt_ip: args.mgmt_ip,
-        mgmt_prefix: args.mgmt_prefix,
-        mgmt_network: args.mgmt_network,
-        mgmt_network_prefix: args.mgmt_network_prefix,
-        loopback_ip: args.loopback_ip,
-        uplink_dhcp: args.uplink_dhcp,
-        uplink_ip: args.uplink_ip,
-        uplink_prefix: args.uplink_prefix,
-        uplink_gateway: args.uplink_gateway,
-        ospf_area: args.ospf_area,
-        underlay_network: args.underlay_network,
-        underlay_network_prefix: args.underlay_network_prefix,
+        hostname,
+        trunk_interface,
+        uplink_interface,
+        trunk_mtu,
+        trunk_speed,
+        trunk_duplex,
+        underlay_vlan,
+        underlay_ip,
+        underlay_prefix,
+        mgmt_vlan,
+        mgmt_ip,
+        mgmt_prefix,
+        mgmt_network,
+        mgmt_network_prefix,
+        loopback_ip,
+        uplink_dhcp,
+        uplink_ip,
+        uplink_prefix,
+        uplink_gateway,
+        ospf_area,
+        underlay_network,
+        underlay_network_prefix,
         ssh_pubkey,
-        bgp_asn: args.bgp_asn,
-        bgp_peer_password: args.bgp_peer_password,
-        dns_servers: args.dns_servers,
-        allow_password_auth: args.allow_password_auth,
+        bgp_asn,
+        bgp_peer_password,
+        dns_servers,
+        allow_password_auth,
     };
 
     std::fs::create_dir_all(&args.out)?;
@@ -321,32 +743,377 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
     );
 }
 
+fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
+    use crate::iso::vyos_wizard as wiz;
+    let fabric = Config::load()?.fabric;
+
+    let hostname = wiz::prompt(args.hostname, "Hostname", None)?;
+    let trunk_mtu = wiz::prompt(
+        args.trunk_mtu,
+        "Trunk MTU",
+        fabric.as_ref().map(|f| f.trunk_mtu).or(Some(9000)),
+    )?;
+
+    let (trunk_speed, trunk_duplex) = match (args.trunk_speed, args.trunk_duplex) {
+        (Some(s), Some(d)) => (Some(s), Some(d)),
+        _ => {
+            if wiz::prompt_bool(
+                None,
+                "Pin the trunk to a fixed speed instead of auto-negotiation?",
+                false,
+            )? {
+                (
+                    Some(wiz::prompt(
+                        None,
+                        "Trunk speed (10/100/1000/2500/5000/10000/...)",
+                        Some("1000".to_string()),
+                    )?),
+                    Some(wiz::prompt(
+                        None,
+                        "Trunk duplex (full/half)",
+                        Some("full".to_string()),
+                    )?),
+                )
+            } else {
+                (None, None)
+            }
+        }
+    };
+
+    let underlay_vlan = wiz::prompt(
+        args.underlay_vlan,
+        "Underlay VLAN ID",
+        fabric.as_ref().map(|f| f.underlay_vlan),
+    )?;
+    let underlay_ip = wiz::prompt(
+        args.underlay_ip,
+        "Underlay loopback-facing IP (this router's own)",
+        None,
+    )?;
+    let underlay_prefix = wiz::prompt(
+        args.underlay_prefix,
+        "Underlay prefix length",
+        fabric
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
+    )?;
+    let mgmt_vlan = wiz::prompt(
+        args.mgmt_vlan,
+        "Management VLAN ID",
+        fabric.as_ref().map(|f| f.mgmt_vlan),
+    )?;
+    // VyOS's own mgmt IP *is* the fabric's mgmt_gateway (every Proxmox
+    // host's default gateway on that VLAN points at it).
+    let mgmt_ip = wiz::prompt(
+        args.mgmt_ip,
+        "Management IP (this router's own)",
+        fabric.as_ref().map(|f| f.mgmt_gateway.clone()),
+    )?;
+    let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
+    let mgmt_network = wiz::prompt(
+        args.mgmt_network,
+        "Management subnet network address (not this router's own IP)",
+        fabric.as_ref().map(|f| f.mgmt_network.clone()),
+    )?;
+    let mgmt_network_prefix = wiz::prompt(
+        args.mgmt_network_prefix,
+        "Management subnet prefix length",
+        fabric.as_ref().map(|f| f.mgmt_network_prefix).or(Some(24)),
+    )?;
+    let loopback_ip = wiz::prompt(
+        args.loopback_ip,
+        "Loopback IP (VTEP source / BGP router-id)",
+        None,
+    )?;
+
+    let uplink_dhcp = wiz::prompt_bool(args.uplink_dhcp, "Use DHCP for the uplink?", false)?;
+    let (uplink_ip, uplink_prefix, uplink_gateway) = if uplink_dhcp {
+        if args.uplink_ip.is_some() || args.uplink_prefix.is_some() || args.uplink_gateway.is_some()
+        {
+            bail!(
+                "--uplink-dhcp is incompatible with --uplink-ip/--uplink-prefix/--uplink-gateway"
+            );
+        }
+        (None, None, None)
+    } else {
+        (
+            Some(wiz::prompt(args.uplink_ip, "Uplink IP", None)?),
+            Some(wiz::prompt(
+                args.uplink_prefix,
+                "Uplink prefix length",
+                Some(24),
+            )?),
+            wiz::prompt_optional(args.uplink_gateway, "Uplink gateway")?,
+        )
+    };
+
+    let ospf_area = wiz::prompt(
+        args.ospf_area,
+        "OSPF area",
+        fabric
+            .as_ref()
+            .map(|f| f.ospf_area.clone())
+            .or(Some("0".to_string())),
+    )?;
+    let underlay_network = wiz::prompt(
+        args.underlay_network,
+        "Underlay network address",
+        fabric.as_ref().map(|f| f.underlay_network.clone()),
+    )?;
+    let underlay_network_prefix = wiz::prompt(
+        args.underlay_network_prefix,
+        "Underlay network prefix length",
+        fabric
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
+    )?;
+
+    let ssh_pubkey_path = wiz::prompt_path(args.ssh_pubkey, "Path to SSH public key file")?;
+    let ssh_pubkey = std::fs::read_to_string(&ssh_pubkey_path)
+        .with_context(|| format!("reading SSH public key at {}", ssh_pubkey_path.display()))?
+        .trim()
+        .to_string();
+
+    let bgp_asn = wiz::prompt(
+        args.bgp_asn,
+        "BGP ASN",
+        fabric.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
+    )?;
+    let bgp_peer_password = wiz::prompt_secret(
+        args.bgp_peer_password
+            .or(fabric.as_ref().map(|f| f.bgp_peer_password.clone())),
+        "BGP peer-group password",
+    )?;
+    let dns_servers = wiz::prompt_list(
+        args.dns_servers
+            .or(fabric.as_ref().map(|f| f.dns_servers.clone())),
+        "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
+        Some(&["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
+    )?;
+    let allow_password_auth = wiz::prompt_bool(
+        args.allow_password_auth,
+        "Keep SSH password auth enabled alongside the key? (recovery fallback, not the default)",
+        false,
+    )?;
+
+    let cfg = vyos_flavor_iso::VyosFlavorConfig {
+        base: vyos_iso::VyosBuildConfig {
+            hostname,
+            // Ignored by the flavor renderer -- it detects the real
+            // interface names live at boot instead.
+            trunk_interface: String::new(),
+            uplink_interface: String::new(),
+            trunk_mtu,
+            trunk_speed,
+            trunk_duplex,
+            underlay_vlan,
+            underlay_ip,
+            underlay_prefix,
+            mgmt_vlan,
+            mgmt_ip,
+            mgmt_prefix,
+            mgmt_network,
+            mgmt_network_prefix,
+            loopback_ip,
+            uplink_dhcp,
+            uplink_ip,
+            uplink_prefix,
+            uplink_gateway,
+            ospf_area,
+            underlay_network,
+            underlay_network_prefix,
+            ssh_pubkey,
+            bgp_asn,
+            bgp_peer_password,
+            dns_servers,
+            allow_password_auth,
+        },
+    };
+
+    std::fs::create_dir_all(&args.out)?;
+    let script_path = args.out.join("crowcloud-fabric-init.sh");
+    std::fs::write(
+        &script_path,
+        vyos_flavor_iso::render_fabric_init_script(&cfg),
+    )?;
+    let cron_path = args.out.join("crowcloud-fabric-init.cron");
+    std::fs::write(&cron_path, vyos_flavor_iso::render_cron_entry())?;
+    let flavor_path = args.out.join("crowcloud.toml");
+    std::fs::write(&flavor_path, vyos_flavor_iso::render_flavor_toml(&cfg))?;
+
+    println!("Wrote {}", script_path.display());
+    println!("Wrote {}", cron_path.display());
+    println!("Wrote {}", flavor_path.display());
+    println!(
+        "\nTo build the ISO, run (requires Docker with privileged-container support):\n\
+         \n\
+         git clone -b rolling --single-branch https://github.com/vyos/vyos-build\n\
+         cp {flavor} vyos-build/data/build-flavors/crowcloud.toml\n\
+         cd vyos-build\n\
+         docker run --rm -it --privileged -v $(pwd):/vyos -w /vyos vyos/vyos-build:rolling \\\n\
+         \x20 sudo ./build-vyos-image --architecture amd64 --build-by crowcloud crowcloud",
+        flavor = flavor_path.display()
+    );
+
+    Ok(())
+}
+
+/// `--disk` and `--disk-filter` are mutually exclusive (enforced by
+/// clap's `conflicts_with` for the flag case); when neither is given,
+/// prompts interactively for which mode to use rather than defaulting
+/// to one, since a filter broad/narrow enough to correctly select
+/// every intended disk depends entirely on the target hardware --
+/// there's no safe default to fall back to (see `DiskSelection`'s doc
+/// comment).
+/// `--disk`/`--disk-filter` stay available for scripting/edge cases,
+/// but the wizard no longer asks which mode to use or what criteria to
+/// type -- when neither flag is given it defaults straight to
+/// `DEVNAME = "*"`, i.e. "the first real disk". Confirmed safe against
+/// Proxmox's own disk-enumeration source (`Proxmox::Sys::Block::hd_list()`):
+/// the candidate pool it draws from already excludes loop/dm/md/ram/
+/// optical devices (by name), requires `DEVTYPE=disk` (excludes
+/// partitions), and excludes the boot/live medium via filesystem-type
+/// detection (`ID_FS_TYPE=iso9660`) -- independent of bus type, so
+/// there's no need to filter out USB specifically. The one thing this
+/// can't control is *which* real disk gets picked if more than one is
+/// present (not size- or identity-aware) -- that's what `hdsize`
+/// (prompted separately, always) is for: it doesn't matter which disk
+/// lands the OS, since its footprint is capped and every other disk
+/// is left untouched regardless.
+fn resolve_disk_selection(
+    disk: Option<Vec<String>>,
+    disk_filter: Option<Vec<String>>,
+    disk_filter_match: Option<String>,
+) -> Result<proxmox_iso::DiskSelection> {
+    if let Some(disks) = disk {
+        return Ok(proxmox_iso::DiskSelection::List(disks));
+    }
+    if let Some(pairs) = disk_filter {
+        return Ok(proxmox_iso::DiskSelection::Filter {
+            filter: parse_disk_filter_pairs(&pairs)?,
+            filter_match: disk_filter_match,
+        });
+    }
+    Ok(proxmox_iso::DiskSelection::Filter {
+        filter: vec![("DEVNAME".to_string(), "*".to_string())],
+        filter_match: Some("any".to_string()),
+    })
+}
+
+fn parse_disk_filter_pairs(pairs: &[String]) -> Result<Vec<(String, String)>> {
+    pairs
+        .iter()
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').with_context(|| {
+                format!("invalid disk filter '{pair}' -- expected KEY=value, e.g. ID_BUS=ata")
+            })?;
+            Ok((key.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
 fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
-    let root_password_hash = hash_password(&args.root_password)?;
+    use crate::iso::vyos_wizard as wiz;
+    let fabric = Config::load()?.fabric;
+
+    let root_password = wiz::prompt_secret(args.root_password, "Root password")?;
+    let root_password_hash = hash_password(&root_password)?;
+    let fqdn = wiz::prompt(args.fqdn, "FQDN", None)?;
+    let admin_email = wiz::prompt(args.admin_email, "Admin email", None)?;
+    let trunk_interface = wiz::prompt(
+        args.trunk_interface,
+        "Trunk interface (fabric NIC, e.g. eno1)",
+        None,
+    )?;
+    let mgmt_ip = wiz::prompt(args.mgmt_ip, "Management IP (this host's own)", None)?;
+    let mgmt_prefix = wiz::prompt(args.mgmt_prefix, "Management prefix length", Some(24))?;
+    let disk_selection =
+        resolve_disk_selection(args.disk, args.disk_filter, args.disk_filter_match)?;
+    let hdsize_gib = Some(wiz::prompt(
+        args.hdsize_gib,
+        "GiB for the OS disk (the rest of whatever disk gets picked, plus every other \
+         disk, is left untouched for storage pools created later)",
+        Some(150.0),
+    )?);
+    let crow_api_url = wiz::prompt(
+        args.crow_api_url,
+        "crowCloud API URL (where the post-install hook checks reachability before self-electing as fleet seed)",
+        None,
+    )?;
     let fleet_secret = match args.fleet_secret {
         Some(s) => s,
         None => Config::fleet_secret_or_generate()?,
     };
 
+    let underlay_vlan = wiz::prompt(
+        args.underlay_vlan,
+        "Underlay VLAN ID",
+        fabric.as_ref().map(|f| f.underlay_vlan),
+    )?;
+    let mgmt_vlan = wiz::prompt(
+        args.mgmt_vlan,
+        "Management VLAN ID",
+        fabric.as_ref().map(|f| f.mgmt_vlan),
+    )?;
+    let mgmt_gateway = wiz::prompt(
+        args.mgmt_gateway,
+        "Management gateway IP (VyOS's own IP on the mgmt VLAN)",
+        fabric.as_ref().map(|f| f.mgmt_gateway.clone()),
+    )?;
+    let trunk_mtu = wiz::prompt(
+        args.trunk_mtu,
+        "Trunk MTU",
+        fabric.as_ref().map(|f| f.trunk_mtu).or(Some(9000)),
+    )?;
+    let bgp_asn = wiz::prompt(
+        args.bgp_asn,
+        "BGP ASN",
+        fabric.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
+    )?;
+    let bgp_peer_password = wiz::prompt_secret(
+        args.bgp_peer_password
+            .or(fabric.as_ref().map(|f| f.bgp_peer_password.clone())),
+        "BGP peer-group password",
+    )?;
+    let underlay_prefix = wiz::prompt(
+        args.underlay_prefix,
+        "Underlay prefix length",
+        fabric
+            .as_ref()
+            .map(|f| f.underlay_network_prefix)
+            .or(Some(24)),
+    )?;
+    let ospf_area = wiz::prompt(
+        args.ospf_area,
+        "OSPF area",
+        fabric
+            .as_ref()
+            .map(|f| f.ospf_area.clone())
+            .or(Some("0".to_string())),
+    )?;
+
     let cfg = proxmox_iso::ProxmoxBuildConfig {
         root_password_hash,
-        fqdn: args.fqdn,
-        admin_email: args.admin_email,
-        trunk_interface: args.trunk_interface,
-        underlay_vlan: args.underlay_vlan,
-        mgmt_vlan: args.mgmt_vlan,
-        mgmt_ip: args.mgmt_ip,
-        mgmt_prefix: args.mgmt_prefix,
-        mgmt_gateway: args.mgmt_gateway,
-        trunk_mtu: args.trunk_mtu,
-        disk_list: args.disk,
+        fqdn,
+        admin_email,
+        trunk_interface,
+        underlay_vlan,
+        mgmt_vlan,
+        mgmt_ip,
+        mgmt_prefix,
+        mgmt_gateway,
+        trunk_mtu,
+        disk_selection,
+        hdsize_gib,
         zfs_raid: args.zfs_raid,
-        crow_api_url: args.crow_api_url,
+        crow_api_url,
         fleet_secret,
-        bgp_asn: args.bgp_asn,
-        bgp_peer_password: args.bgp_peer_password,
-        underlay_prefix: args.underlay_prefix,
-        ospf_area: args.ospf_area,
+        bgp_asn,
+        bgp_peer_password,
+        underlay_prefix,
+        ospf_area,
     };
 
     std::fs::create_dir_all(&args.out)?;
