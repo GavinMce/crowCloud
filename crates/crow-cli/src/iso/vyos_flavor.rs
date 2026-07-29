@@ -76,7 +76,12 @@ const DETECT_TRUNK_AND_UPLINK: &str = r#"detect_trunk_and_uplink() {
     done
 
     # Give link state a moment to settle after bringing interfaces up.
-    sleep 3
+    # Confirmed live: 3s was too short on a bnx2 (Broadcom NetXtreme II)
+    # NIC specifically -- its autonegotiation is slower than more modern
+    # chips, and the driver's also just been reloaded (to pick up
+    # firmware, see bnx2_firmware) immediately before this runs, adding
+    # to the settle time needed.
+    sleep 10
 
     for iface in "${candidates[@]}"; do
         if [ "$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo 0)" = "1" ]; then
@@ -181,26 +186,25 @@ VBASH
         install_bnx2_firmware = crate::iso::bnx2_firmware::render_install_script(),
         detect_trunk_and_uplink = DETECT_TRUNK_AND_UPLINK,
         set_commands = set_commands,
-        install_caddy = INSTALL_CADDY,
+        install_caddy = render_install_caddy(),
     )
 }
 
 /// Installs Caddy for the HTTP/subdomain-routing exposure path
 /// (`NetworkProvider::expose_http`, pushed later over SSH per
-/// `ExposedEndpoint`) -- VyOS is Debian-based underneath, so this is a
-/// normal apt install via Caddy's own Cloudsmith-hosted repo, not
-/// anything VyOS-specific. Runs on every `@reboot`, same as the rest of
-/// this script -- idempotent (apt no-ops on an already-installed package,
-/// and the base Caddyfile write never touches `sites/*.caddy`, which is
-/// only ever managed by the operator over SSH afterward).
-const INSTALL_CADDY: &str = r#"echo "==> Installing Caddy (HTTP exposure path)"
-if ! command -v caddy >/dev/null 2>&1; then
-    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update
-    apt-get install -y caddy
-fi
+/// `ExposedEndpoint`). Baked in directly from a pre-fetched `.deb` (see
+/// `caddy_package`) rather than installed via apt at first boot --
+/// confirmed live: the apt-based install (Caddy's own official Cloudsmith
+/// instructions) hit real breakage (unavailable keyring packages, then a
+/// DNS/connectivity gap at exactly the moment first boot needed to reach
+/// Cloudsmith). Runs on every `@reboot`, same as the rest of this script
+/// -- idempotent (`dpkg -i` no-ops if already installed, and the base
+/// Caddyfile write never touches `sites/*.caddy`, which is only ever
+/// managed by the operator over SSH afterward).
+fn render_install_caddy() -> String {
+    format!(
+        r#"echo "==> Installing Caddy (HTTP exposure path)"
+{install_caddy_package}
 
 mkdir -p /etc/caddy/sites
 if [ ! -f /etc/caddy/Caddyfile ] || ! grep -qF 'import sites/*.caddy' /etc/caddy/Caddyfile; then
@@ -210,7 +214,10 @@ CADDYFILE
 fi
 
 systemctl enable caddy >/dev/null 2>&1 || true
-systemctl restart caddy"#;
+systemctl restart caddy"#,
+        install_caddy_package = crate::iso::caddy_package::render_install_script(),
+    )
+}
 
 /// `/etc/cron.d/crowcloud-fabric-init` -- no `systemctl enable`
 /// equivalent needed, cron.d files are read directly with no separate
@@ -256,10 +263,12 @@ data = {script_data}
 path = "etc/cron.d/crowcloud-fabric-init"
 data = {cron_data}
 
-{bnx2_firmware}"#,
+{bnx2_firmware}
+{caddy_package}"#,
         script_data = toml_multiline_string(&render_fabric_init_script(cfg)),
         cron_data = toml_multiline_string(&render_cron_entry()),
         bnx2_firmware = crate::iso::bnx2_firmware::render_includes_chroot_toml(),
+        caddy_package = crate::iso::caddy_package::render_includes_chroot_toml(),
     )
 }
 
@@ -366,7 +375,11 @@ mod tests {
     #[test]
     fn fabric_init_script_installs_caddy_for_the_http_exposure_path() {
         let out = render_fabric_init_script(&cfg());
-        assert!(out.contains("apt-get install -y caddy"));
+        // Baked-in .deb via dpkg, not apt -- confirmed live, the apt-based
+        // install hit unavailable keyring packages and a network gap at
+        // exactly the moment first boot needed to reach Cloudsmith.
+        assert!(out.contains("dpkg -i"));
+        assert!(!out.contains("apt-get install -y caddy"));
         assert!(out.contains("import sites/*.caddy"));
         assert!(out.contains("systemctl enable caddy"));
         // Idempotent across every @reboot re-run, not just first boot --
