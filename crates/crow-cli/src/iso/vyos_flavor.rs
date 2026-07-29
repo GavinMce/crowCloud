@@ -157,12 +157,44 @@ source /opt/vyatta/etc/functions/script-template
 configure
 {set_commands}exit
 VBASH
+
+{install_caddy}
 "#,
         uplink_gateway_probe = uplink_gateway_probe,
         detect_trunk_and_uplink = DETECT_TRUNK_AND_UPLINK,
         set_commands = set_commands,
+        install_caddy = INSTALL_CADDY,
     )
 }
+
+/// Installs Caddy for the HTTP/subdomain-routing exposure path
+/// (`NetworkProvider::expose_http`, pushed later over SSH per
+/// `ExposedEndpoint`) -- VyOS is Debian-based underneath, so this is a
+/// normal apt install via Caddy's own Cloudsmith-hosted repo, not
+/// anything VyOS-specific. Runs on every `@reboot`, same as the rest of
+/// this script -- idempotent (apt no-ops on an already-installed package,
+/// and the base Caddyfile write never touches `sites/*.caddy`, which is
+/// only ever managed by the operator over SSH afterward).
+const INSTALL_CADDY: &str = r#"echo "==> Installing Caddy (HTTP exposure path)"
+if ! command -v caddy >/dev/null 2>&1; then
+    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+        | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+        > /etc/apt/sources.list.d/caddy-stable.list
+    apt-get update
+    apt-get install -y caddy
+fi
+
+mkdir -p /etc/caddy/sites
+if [ ! -f /etc/caddy/Caddyfile ] || ! grep -q "import sites/\*.caddy" /etc/caddy/Caddyfile; then
+    cat > /etc/caddy/Caddyfile <<'CADDYFILE'
+import sites/*.caddy
+CADDYFILE
+fi
+
+systemctl enable caddy >/dev/null 2>&1 || true
+systemctl restart caddy"#;
 
 /// `/etc/cron.d/crowcloud-fabric-init` -- no `systemctl enable`
 /// equivalent needed, cron.d files are read directly with no separate
@@ -303,6 +335,17 @@ mod tests {
         let out = render_cron_entry();
         assert!(out.starts_with("@reboot root"));
         assert!(out.contains("crowcloud-fabric-init.sh"));
+    }
+
+    #[test]
+    fn fabric_init_script_installs_caddy_for_the_http_exposure_path() {
+        let out = render_fabric_init_script(&cfg());
+        assert!(out.contains("apt-get install -y caddy"));
+        assert!(out.contains("import sites/*.caddy"));
+        assert!(out.contains("systemctl enable caddy"));
+        // Idempotent across every @reboot re-run, not just first boot --
+        // must not reinstall/reconfigure once already present.
+        assert!(out.contains("if ! command -v caddy"));
     }
 
     #[test]

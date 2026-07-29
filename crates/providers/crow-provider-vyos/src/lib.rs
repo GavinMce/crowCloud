@@ -6,14 +6,22 @@
 /// same SSH `configure`/`set`/`commit`/`save` session `crow-cli`'s
 /// `iso vyos apply` already uses (shared via `crow-vyos-ssh`).
 ///
-/// `expose_http`/`provision_cert`/`revoke_cert` (the subdomain/Caddy-routing
-/// path) are a separate follow-up -- this pass only covers the "shared
-/// IP:port" TCP/UDP path, since VyOS itself has no HTTP-layer routing
-/// capability without a reverse proxy installed on it first.
+/// `expose_http` routes via Caddy (installed onto VyOS at first boot, see
+/// `crow-cli`'s `vyos_flavor::INSTALL_CADDY`) -- a per-endpoint site file
+/// pushed over plain SSH (not the `configure` session, see
+/// `crow-vyos-ssh::write_remote_file`) and a graceful reload. No NAT rule
+/// is needed for this path at all: Caddy terminates directly on VyOS's own
+/// uplink IP and reverse-proxies over the fabric's existing routing, so
+/// there's nothing to translate. `provision_cert`/`revoke_cert` stay
+/// unimplemented -- Caddy issues/renews certs automatically as a side
+/// effect of a site being configured, and nothing calls these two methods
+/// yet regardless.
 use async_trait::async_trait;
 use crow_core::{traits::NetworkProvider, types::*, ProviderError};
 use crow_vyos_ssh::VyosSshConfig;
 use std::path::PathBuf;
+
+mod caddy;
 
 pub struct VyosNetworkProvider {
     pub host: String,
@@ -74,12 +82,26 @@ impl NetworkProvider for VyosNetworkProvider {
         &self.host
     }
 
-    async fn expose_http(&self, _spec: HttpExposeSpec) -> Result<ExposeHandle, ProviderError> {
-        Err(ProviderError::Other(
-            "expose_http (subdomain/Caddy routing) isn't implemented yet -- \
-             only the shared IP:port TCP/UDP path is built so far"
-                .to_string(),
-        ))
+    async fn expose_http(&self, spec: HttpExposeSpec) -> Result<ExposeHandle, ProviderError> {
+        caddy::validate_domain(&spec.domain).map_err(ProviderError::Other)?;
+
+        let path = caddy::site_file_path(&spec.domain);
+        let content =
+            caddy::render_site_block(&spec.domain, &spec.target_ip, spec.target_port, spec.tls);
+
+        crow_vyos_ssh::write_remote_file(&self.ssh_config(), &path, &content)
+            .await
+            .map_err(|e| ProviderError::Other(format!("writing Caddy site file to VyOS: {e:#}")))?;
+
+        crow_vyos_ssh::run_remote_command(&self.ssh_config(), "sudo systemctl reload caddy")
+            .await
+            .map_err(|e| ProviderError::Other(format!("reloading Caddy on VyOS: {e:#}")))?;
+
+        Ok(ExposeHandle {
+            provider_id: path,
+            domain: Some(spec.domain),
+            public_port: None,
+        })
     }
 
     async fn expose_tcp(&self, spec: TcpExposeSpec) -> Result<ExposeHandle, ProviderError> {
@@ -121,10 +143,26 @@ impl NetworkProvider for VyosNetworkProvider {
     }
 
     async fn unexpose(&self, handle: &ExposeHandle) -> Result<(), ProviderError> {
+        if let Some(domain) = &handle.domain {
+            let path = caddy::site_file_path(domain);
+            crow_vyos_ssh::run_remote_command(&self.ssh_config(), &format!("sudo rm -f '{path}'"))
+                .await
+                .map_err(|e| {
+                    ProviderError::Other(format!("removing Caddy site file from VyOS: {e:#}"))
+                })?;
+            return crow_vyos_ssh::run_remote_command(
+                &self.ssh_config(),
+                "sudo systemctl reload caddy",
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| ProviderError::Other(format!("reloading Caddy on VyOS: {e:#}")));
+        }
+
         let Some(public_port) = handle.public_port else {
             return Err(ProviderError::Other(
-                "ExposeHandle has no public_port -- can't determine which NAT rule to remove \
-                 (this handle wasn't produced by VyosNetworkProvider::expose_tcp)"
+                "ExposeHandle has neither domain nor public_port -- can't determine what to \
+                 remove (this handle wasn't produced by VyosNetworkProvider)"
                     .to_string(),
             ));
         };

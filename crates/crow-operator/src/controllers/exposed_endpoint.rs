@@ -31,10 +31,8 @@ const PENDING: &str = "Pending";
 enum ReconcileError {
     #[error("target kind {0:?} isn't supported yet -- only VirtualMachine is wired up so far")]
     UnsupportedTargetKind(String),
-    #[error(
-        "ExposeType::Http (subdomain/Caddy routing) isn't implemented yet -- only Tcp/Udp are"
-    )]
-    HttpNotYetSupported,
+    #[error("ExposeType::Http requires spec.domain to be set -- subdomain routing has no meaning without one")]
+    HttpRequiresDomain,
     #[error(transparent)]
     Provider(#[from] crow_core::ProviderError),
     #[error(transparent)]
@@ -123,8 +121,8 @@ fn to_protocol(expose_type: &ExposeType, protocol: &Option<ExposeProtocol>) -> P
 async fn apply(endpoint: &ExposedEndpoint, ctx: &Ctx) -> Result<Action, ReconcileError> {
     let name = endpoint.name_any();
 
-    if matches!(endpoint.spec.expose_type, ExposeType::Http) {
-        return Err(ReconcileError::HttpNotYetSupported);
+    if matches!(endpoint.spec.expose_type, ExposeType::Http) && endpoint.spec.domain.is_none() {
+        return Err(ReconcileError::HttpRequiresDomain);
     }
 
     let Some(target_ip) =
@@ -146,24 +144,39 @@ async fn apply(endpoint: &ExposedEndpoint, ctx: &Ctx) -> Result<Action, Reconcil
         return Ok(Action::requeue(Duration::from_secs(15)));
     };
 
-    let public_port = endpoint.spec.public_port.unwrap_or(endpoint.spec.port);
-    let protocol = to_protocol(&endpoint.spec.expose_type, &endpoint.spec.protocol);
-
-    ctx.network
-        .expose_tcp(TcpExposeSpec {
-            target_ip,
-            target_port: endpoint.spec.port,
-            public_port,
-            protocol,
-        })
-        .await?;
+    let public_url = if matches!(endpoint.spec.expose_type, ExposeType::Http) {
+        // Checked above -- Http always has a domain by this point.
+        let domain = endpoint.spec.domain.clone().expect("checked above");
+        ctx.network
+            .expose_http(crow_core::types::HttpExposeSpec {
+                domain: domain.clone(),
+                target_ip,
+                target_port: endpoint.spec.port,
+                tls: endpoint.spec.tls,
+            })
+            .await?;
+        let scheme = if endpoint.spec.tls { "https" } else { "http" };
+        format!("{scheme}://{domain}")
+    } else {
+        let public_port = endpoint.spec.public_port.unwrap_or(endpoint.spec.port);
+        let protocol = to_protocol(&endpoint.spec.expose_type, &endpoint.spec.protocol);
+        ctx.network
+            .expose_tcp(TcpExposeSpec {
+                target_ip,
+                target_port: endpoint.spec.port,
+                public_port,
+                protocol,
+            })
+            .await?;
+        format!("{}:{public_port}", ctx.network.host)
+    };
 
     patch_status(
         ctx,
         &name,
         &ExposedEndpointStatus {
             phase: Some(READY.to_string()),
-            public_url: Some(format!("{}:{public_port}", ctx.network.host)),
+            public_url: Some(public_url),
             cert_expiry: None,
         },
     )
@@ -173,20 +186,27 @@ async fn apply(endpoint: &ExposedEndpoint, ctx: &Ctx) -> Result<Action, Reconcil
 }
 
 async fn cleanup(endpoint: &ExposedEndpoint, ctx: &Ctx) -> Result<Action, ReconcileError> {
-    if matches!(endpoint.spec.expose_type, ExposeType::Http) {
-        // Never got far enough to create anything on the HTTP path either.
-        return Ok(Action::await_change());
-    }
-
-    let public_port = endpoint.spec.public_port.unwrap_or(endpoint.spec.port);
-    ctx.network
-        .unexpose(&crow_core::types::ExposeHandle {
+    let handle = if matches!(endpoint.spec.expose_type, ExposeType::Http) {
+        let Some(domain) = endpoint.spec.domain.clone() else {
+            // Never got far enough to create anything -- HttpRequiresDomain
+            // would have stopped `apply` before any Caddy file existed.
+            return Ok(Action::await_change());
+        };
+        crow_core::types::ExposeHandle {
+            provider_id: String::new(),
+            domain: Some(domain),
+            public_port: None,
+        }
+    } else {
+        let public_port = endpoint.spec.public_port.unwrap_or(endpoint.spec.port);
+        crow_core::types::ExposeHandle {
             provider_id: String::new(),
             domain: None,
             public_port: Some(public_port),
-        })
-        .await?;
+        }
+    };
 
+    ctx.network.unexpose(&handle).await?;
     Ok(Action::await_change())
 }
 

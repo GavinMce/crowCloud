@@ -188,6 +188,89 @@ pub async fn apply_commands(cfg: &VyosSshConfig, commands: &[String]) -> Result<
     Ok(())
 }
 
+/// Runs a single plain shell command over SSH (no PTY, no `configure`
+/// session) -- for anything that isn't VyOS's own `set`/`commit` config
+/// tree, like managing Caddy's site files or reloading its service.
+/// Unlike `apply_commands`, this doesn't need `-tt`: VyOS's CLI wrapper
+/// quirk is specific to its `vbash`-based `configure` mode, not to plain
+/// non-interactive command execution, which behaves like any normal Linux
+/// box under the hood (VyOS is Debian-based).
+pub async fn run_remote_command(cfg: &VyosSshConfig, command: &str) -> Result<String> {
+    let host_key_checking = if cfg.strict_host_key_checking {
+        "accept-new"
+    } else {
+        "no"
+    };
+    let output = Command::new("ssh")
+        .arg("-i")
+        .arg(&cfg.ssh_key)
+        .arg("-p")
+        .arg(cfg.port.to_string())
+        .arg("-o")
+        .arg(format!("StrictHostKeyChecking={host_key_checking}"))
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg(format!("{}@{}", cfg.user, cfg.host))
+        .arg(command)
+        .output()
+        .await
+        .context("running remote command over ssh")?;
+
+    if !output.status.success() {
+        bail!(
+            "remote command '{command}' exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Writes `content` to `path` on the remote box via a piped `cat >`,
+/// avoiding any shell-quoting hazards from embedding file content directly
+/// in a command string. `sudo` is assumed passwordless for the configured
+/// user, matching VyOS's default `vyos` user convention.
+pub async fn write_remote_file(cfg: &VyosSshConfig, path: &str, content: &str) -> Result<()> {
+    let host_key_checking = if cfg.strict_host_key_checking {
+        "accept-new"
+    } else {
+        "no"
+    };
+    let mut child = Command::new("ssh")
+        .arg("-i")
+        .arg(&cfg.ssh_key)
+        .arg("-p")
+        .arg(cfg.port.to_string())
+        .arg("-o")
+        .arg(format!("StrictHostKeyChecking={host_key_checking}"))
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg(format!("{}@{}", cfg.user, cfg.host))
+        .arg(format!("sudo tee '{path}' > /dev/null"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawning ssh for remote file write")?;
+
+    let mut stdin = child.stdin.take().context("ssh stdin")?;
+    stdin.write_all(content.as_bytes()).await?;
+    drop(stdin);
+
+    let output = child
+        .wait_with_output()
+        .await
+        .context("waiting for remote file write")?;
+    if !output.status.success() {
+        bail!(
+            "writing remote file {path} exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
