@@ -1,0 +1,11 @@
+[package]
+name = "crow-vyos-ssh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Shared SSH configure/set/commit/save session logic for talking to a live VyOS device"
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true

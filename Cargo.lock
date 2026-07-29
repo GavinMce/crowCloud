@@ -555,6 +555,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "crow-vyos-ssh",
  "dialoguer",
  "dirs",
  "reqwest",
@@ -607,6 +608,7 @@ dependencies = [
  "crow-core",
  "crow-db",
  "crow-provider-registry",
+ "crow-provider-vyos",
  "crow-resource-vm",
  "futures",
  "k8s-openapi",
@@ -663,6 +665,17 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "crow-provider-vyos"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crow-core",
+ "crow-vyos-ssh",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -729,6 +742,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "crow-vyos-ssh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tokio",
 ]
 
 [[package]]

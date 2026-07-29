@@ -1,0 +1,13 @@
+[package]
+name = "crow-provider-vyos"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+crow-core = { path = "../../crow-core" }
+crow-vyos-ssh = { path = "../../crow-vyos-ssh" }
+
+tokio.workspace = true
+async-trait.workspace = true
+tracing.workspace = true

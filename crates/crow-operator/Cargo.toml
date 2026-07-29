@@ -12,6 +12,7 @@ path = "src/main.rs"
 crow-core = { path = "../crow-core" }
 crow-db = { path = "../crow-db" }
 crow-provider-registry = { path = "../providers/crow-provider-registry" }
+crow-provider-vyos = { path = "../providers/crow-provider-vyos" }
 crow-resource-vm = { path = "../resources/crow-resource-vm" }
 
 tokio.workspace = true

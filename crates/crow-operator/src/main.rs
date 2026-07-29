@@ -4,13 +4,16 @@ use kube::{
     api::{Api, ObjectMeta, Patch, PatchParams, PostParams},
     Client, CustomResourceExt,
 };
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 mod controllers;
 
-/// Installs the CRDs this operator reconciles. `VirtualMachine` plus the IPAM
-/// pair (`IpPool`/`IpClaim`) are installed — K8sCluster/Database/ObjectStore
-/// stay out of scope until their controllers are implemented.
+/// Installs the CRDs this operator reconciles. `VirtualMachine`, the IPAM
+/// trio (`IpPool`/`IpClaim`/`PrivateSubnet`), and `ExposedEndpoint` (the
+/// TCP/UDP shared-IP:port path only, see `controllers::exposed_endpoint`)
+/// are installed — K8sCluster/Database/ObjectStore/TunnelEndpoint/
+/// CustomDomain stay out of scope until their controllers are implemented.
 async fn install_crds(client: &Client) -> anyhow::Result<()> {
     let crds: Api<CustomResourceDefinition> = Api::all(client.clone());
     let pp = PatchParams::apply("crow-operator").force();
@@ -19,6 +22,8 @@ async fn install_crds(client: &Client) -> anyhow::Result<()> {
         crow_core::crd::resources::VirtualMachine::crd(),
         crow_core::crd::networking::IpPool::crd(),
         crow_core::crd::networking::IpClaim::crd(),
+        crow_core::crd::networking::PrivateSubnet::crd(),
+        crow_core::crd::networking::ExposedEndpoint::crd(),
     ] {
         let name = crd
             .metadata
@@ -52,6 +57,27 @@ async fn ensure_namespace(client: &Client) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// There's exactly one VyOS box per fabric today (no multi-provider
+/// swapping the way `InfraProvider` resolution needs, since VMs can land
+/// on different Proxmox nodes) -- so its SSH connection details are
+/// operator-level config (env vars), not a per-CR reference or a Postgres
+/// `providers` row.
+fn build_vyos_network_provider() -> crow_provider_vyos::VyosNetworkProvider {
+    crow_provider_vyos::VyosNetworkProvider {
+        host: std::env::var("VYOS_HOST").expect("VYOS_HOST must be set for crow-operator"),
+        port: std::env::var("VYOS_SSH_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(22),
+        user: std::env::var("VYOS_SSH_USER").unwrap_or_else(|_| "vyos".to_string()),
+        ssh_key: std::env::var("VYOS_SSH_KEY_PATH")
+            .expect("VYOS_SSH_KEY_PATH must be set for crow-operator")
+            .into(),
+        uplink_interface: std::env::var("VYOS_UPLINK_INTERFACE")
+            .expect("VYOS_UPLINK_INTERFACE must be set for crow-operator"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -69,7 +95,9 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for crow-operator");
     let db = crow_db::connect(&database_url).await?;
 
-    controllers::run_all(client, db).await?;
+    let network = Arc::new(build_vyos_network_provider());
+
+    controllers::run_all(client, db, network).await?;
 
     Ok(())
 }

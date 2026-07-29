@@ -62,6 +62,56 @@ pub struct IpClaimStatus {
     pub message: Option<String>,
 }
 
+// --- PrivateSubnet ---
+
+/// Owns the actual network segment an `IpPool` only ever references by
+/// bridge name. `IpPool`/`IpClaim` are pure IP-address bookkeeping on top
+/// of a bridge that's assumed to already exist (see `IpPoolSpec.bridge`,
+/// a plain string); nothing previously created that bridge as a managed
+/// resource -- `InfraProvider::create_network` existed but was never
+/// called by any controller. `PrivateSubnet` closes that gap: reconciling
+/// it provisions the bridge via `create_network`, then owns a matching
+/// `IpPool` (created with an owner reference, so it cascades) pointing at
+/// the resulting bridge name, so a subnet and its address pool come into
+/// existence together instead of needing to be wired up by hand.
+#[derive(CustomResource, Serialize, Deserialize, Debug, Clone, JsonSchema)]
+#[kube(
+    group = "crow.cloud",
+    version = "v1alpha1",
+    kind = "PrivateSubnet",
+    namespaced,
+    status = "PrivateSubnetStatus",
+    shortname = "psubnet",
+    printcolumn = r#"{"name":"Bridge","type":"string","jsonPath":".status.bridge"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateSubnetSpec {
+    /// Holds the Postgres `providers.name` value, not a Kubernetes object
+    /// reference -- same convention as `VirtualMachineSpec.infra_provider_ref`
+    /// (there is no `Provider` custom resource today).
+    pub infra_provider_ref: ResourceRef,
+    /// Which of the provider's adopted nodes to create the bridge on.
+    pub node: String,
+    pub cidr: String,
+    pub vlan_id: Option<u16>,
+    pub gateway: String,
+    pub dns: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateSubnetStatus {
+    pub phase: Option<String>,
+    /// The provider-side bridge name backing this subnet, resolved from
+    /// `NetworkHandle.provider_id` -- this is the value the owned
+    /// `IpPool.spec.bridge` points at.
+    pub bridge: Option<String>,
+    /// Name of the `IpPool` this subnet owns, once created.
+    pub ip_pool_ref: Option<String>,
+    pub message: Option<String>,
+}
+
 // --- TunnelEndpoint ---
 
 #[derive(CustomResource, Serialize, Deserialize, Debug, Clone, JsonSchema)]
