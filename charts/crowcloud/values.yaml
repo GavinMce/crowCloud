@@ -32,6 +32,23 @@ operator:
   # VirtualMachine CRD + crow-resources namespace at startup; more than one
   # replica would race on those.
   replicas: 1
+  # Optional — the ExposedEndpoint controller degrades to a no-op stub
+  # (not a crash) when host is left empty, since most of the operator's
+  # functionality (VM provisioning, IP pools) doesn't need VyOS at all.
+  # There's exactly one VyOS box per fabric today, so this is operator-
+  # level config rather than a per-CR reference.
+  vyos:
+    host: ""
+    sshPort: 22
+    sshUser: vyos
+    # Physical uplink NIC name on the VyOS box -- DNAT rules are scoped
+    # to it so they only match traffic actually arriving from upstream.
+    uplinkInterface: ""
+    # SSH private key matching the public key baked into the VyOS image
+    # (see `crow-cli iso vyos build --ssh-pubkey`). Templated into the
+    # shared Secret (templates/secret.yaml), same pattern as JWT_SECRET
+    # -- never left as a plaintext Deployment env value.
+    sshPrivateKey: ""
 
 postgres:
   # When true, this chart creates a CloudNativePG Cluster resource and wires

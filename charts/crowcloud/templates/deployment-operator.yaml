@@ -38,3 +38,31 @@ spec:
                   name: {{ .Values.api.env.databaseUrlSecretName | default (printf "%s-secrets" (include "crowcloud.fullname" .)) }}
                   key: {{ .Values.api.env.databaseUrlSecretKey | default "database-url" }}
             {{- end }}
+            {{- if .Values.operator.vyos.host }}
+            - name: VYOS_HOST
+              value: {{ .Values.operator.vyos.host | quote }}
+            - name: VYOS_SSH_PORT
+              value: {{ .Values.operator.vyos.sshPort | default 22 | quote }}
+            - name: VYOS_SSH_USER
+              value: {{ .Values.operator.vyos.sshUser | default "vyos" | quote }}
+            - name: VYOS_UPLINK_INTERFACE
+              value: {{ required "operator.vyos.uplinkInterface is required when operator.vyos.host is set" .Values.operator.vyos.uplinkInterface | quote }}
+            - name: VYOS_SSH_KEY_PATH
+              value: /etc/crow-operator/vyos-ssh/vyos-ssh-key
+            {{- end }}
+          {{- if .Values.operator.vyos.host }}
+          volumeMounts:
+            - name: vyos-ssh-key
+              mountPath: /etc/crow-operator/vyos-ssh
+              readOnly: true
+          {{- end }}
+      {{- if .Values.operator.vyos.host }}
+      volumes:
+        - name: vyos-ssh-key
+          secret:
+            secretName: {{ include "crowcloud.fullname" . }}-secrets
+            items:
+              - key: vyos-ssh-key
+                path: vyos-ssh-key
+                mode: 0400
+      {{- end }}
