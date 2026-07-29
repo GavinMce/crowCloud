@@ -160,6 +160,8 @@ set -euo pipefail
 
 UPLINK_GATEWAY_PROBE="{uplink_gateway_probe}"
 
+{install_bnx2_firmware}
+
 {detect_trunk_and_uplink}
 
 read -r TRUNK_IF UPLINK_IF < <(detect_trunk_and_uplink) || {{
@@ -176,6 +178,7 @@ VBASH
 {install_caddy}
 "#,
         uplink_gateway_probe = uplink_gateway_probe,
+        install_bnx2_firmware = crate::iso::bnx2_firmware::render_install_script(),
         detect_trunk_and_uplink = DETECT_TRUNK_AND_UPLINK,
         set_commands = set_commands,
         install_caddy = INSTALL_CADDY,
@@ -252,9 +255,11 @@ data = {script_data}
 [[includes_chroot]]
 path = "etc/cron.d/crowcloud-fabric-init"
 data = {cron_data}
-"#,
+
+{bnx2_firmware}"#,
         script_data = toml_multiline_string(&render_fabric_init_script(cfg)),
         cron_data = toml_multiline_string(&render_cron_entry()),
+        bnx2_firmware = crate::iso::bnx2_firmware::render_includes_chroot_toml(),
     )
 }
 

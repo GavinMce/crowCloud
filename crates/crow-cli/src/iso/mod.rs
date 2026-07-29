@@ -1,3 +1,4 @@
+pub mod bnx2_firmware;
 pub mod fabric;
 pub mod proxmox;
 pub mod vyos;
