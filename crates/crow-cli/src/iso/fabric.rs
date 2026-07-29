@@ -30,6 +30,16 @@ pub struct FabricConfig {
     /// VyOS's own IP on the mgmt VLAN -- also every Proxmox host's
     /// default gateway on that same VLAN.
     pub mgmt_gateway: String,
+    /// VyOS's own IP on the underlay VLAN -- the BGP route-reflector
+    /// every Proxmox host actively peers with. VyOS's `bgp listen
+    /// range` is purely passive (accepts incoming connections from
+    /// anywhere in the underlay subnet); nothing on the VyOS side ever
+    /// dials out. Confirmed live: without this, a Proxmox host's own
+    /// `FABRIC` peer-group template (remote-as/password/activate) was
+    /// defined but never bound to an actual neighbor address, so it
+    /// never originated a connection either -- with both sides passive,
+    /// no BGP session ever formed despite OSPF working fine.
+    pub bgp_route_reflector_ip: String,
     pub trunk_mtu: u32,
     pub ospf_area: String,
     pub bgp_asn: u32,
