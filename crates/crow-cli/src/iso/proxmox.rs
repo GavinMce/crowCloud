@@ -392,8 +392,13 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
     # a guest NIC on vmbr0 with no tag lands on the wrong L2 segment
     # entirely -- it would never have reached MGMT_GATEWAY regardless of
     # what IP it was given.
+    # Confirmed live: `qm terminal` has nothing to attach to without an
+    # explicit serial device -- Proxmox doesn't create one by default,
+    # and this is the only console access to a cloud-init-only guest
+    # with no other interactive install step.
     qm create "${{SEED_VMID}}" --name crowcloud-seed --memory 4096 --cores 2 \
         --net0 "virtio,bridge=${{DEFAULT_BRIDGE}},tag=${{MGMT_VLAN}}" --scsihw virtio-scsi-pci \
+        --serial0 socket --vga serial0 \
         --ostype l26
     # Confirmed live: hardcoding the default directory storage's import
     # path broke on this host's real (different) storage backend with
@@ -764,6 +769,17 @@ mod tests {
         // reach MGMT_GATEWAY, regardless of what IP it's given.
         let out = render_post_install_hook(&cfg());
         assert!(out.contains(r#"--net0 "virtio,bridge=${DEFAULT_BRIDGE},tag=${MGMT_VLAN}""#));
+    }
+
+    #[test]
+    fn hook_gives_the_seed_vm_a_serial_console() {
+        // Confirmed live: `qm terminal` has nothing to attach to without
+        // an explicit serial device -- Proxmox doesn't create one by
+        // default, and this is the only console access to a
+        // cloud-init-only guest with no other interactive install step.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("--serial0 socket"));
+        assert!(out.contains("--vga serial0"));
     }
 
     #[test]
