@@ -317,6 +317,8 @@ mod tests {
                 bgp_peer_password: "fabric-secret".into(),
                 dns_servers: vec!["8.8.8.8".into(), "8.8.4.4".into()],
                 allow_password_auth: false,
+                crow_api_mgmt_ip: None,
+                crow_api_mgmt_port: None,
             },
         }
     }

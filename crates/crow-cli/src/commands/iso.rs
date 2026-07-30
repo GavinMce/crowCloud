@@ -180,6 +180,17 @@ pub struct VyosFlavorArgs {
     pub dns_servers: Option<Vec<String>>,
     #[arg(long)]
     pub allow_password_auth: Option<bool>,
+    /// crowCloud control plane's mgmt-VLAN IP -- when set together with
+    /// --crow-api-mgmt-port, bakes in a NAT rule forwarding that same
+    /// port on the uplink straight to it, so the control plane is
+    /// reachable from the upstream LAN (e.g. during bootstrap, before
+    /// it's up enough to configure an ExposedEndpoint for itself).
+    /// Leave both unset if there's no crowCloud instance on this fabric
+    /// yet.
+    #[arg(long, requires = "crow_api_mgmt_port")]
+    pub crow_api_mgmt_ip: Option<String>,
+    #[arg(long, requires = "crow_api_mgmt_ip")]
+    pub crow_api_mgmt_port: Option<u16>,
     /// Directory to write the rendered fabric-init script, cron entry,
     /// and vyos-build flavor TOML into
     #[arg(long, default_value = "./build")]
@@ -279,6 +290,17 @@ pub struct VyosBuildArgs {
     /// notes)
     #[arg(long)]
     pub allow_password_auth: Option<bool>,
+    /// crowCloud control plane's mgmt-VLAN IP -- when set together with
+    /// --crow-api-mgmt-port, bakes in a NAT rule forwarding that same
+    /// port on the uplink straight to it, so the control plane is
+    /// reachable from the upstream LAN (e.g. during bootstrap, before
+    /// it's up enough to configure an ExposedEndpoint for itself).
+    /// Leave both unset if there's no crowCloud instance on this fabric
+    /// yet.
+    #[arg(long, requires = "crow_api_mgmt_port")]
+    pub crow_api_mgmt_ip: Option<String>,
+    #[arg(long, requires = "crow_api_mgmt_ip")]
+    pub crow_api_mgmt_port: Option<u16>,
     /// Directory to write the rendered configure-script into
     #[arg(long, default_value = "./build")]
     pub out: PathBuf,
@@ -706,6 +728,19 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         "Keep SSH password auth enabled alongside the key? (recovery fallback, not the default)",
         false,
     )?;
+    let crow_api_mgmt_ip = wiz::prompt_optional(
+        args.crow_api_mgmt_ip,
+        "crowCloud control plane mgmt IP (leave blank if none yet -- skips the forwarding rule entirely)",
+    )?;
+    let crow_api_mgmt_port = if crow_api_mgmt_ip.is_some() {
+        Some(wiz::prompt(
+            args.crow_api_mgmt_port,
+            "crowCloud control plane port",
+            Some(8080),
+        )?)
+    } else {
+        None
+    };
 
     let cfg = vyos_iso::VyosBuildConfig {
         hostname,
@@ -735,6 +770,8 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         bgp_peer_password,
         dns_servers,
         allow_password_auth,
+        crow_api_mgmt_ip,
+        crow_api_mgmt_port,
     };
 
     std::fs::create_dir_all(&args.out)?;
@@ -921,6 +958,19 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
         "Keep SSH password auth enabled alongside the key? (recovery fallback, not the default)",
         false,
     )?;
+    let crow_api_mgmt_ip = wiz::prompt_optional(
+        args.crow_api_mgmt_ip,
+        "crowCloud control plane mgmt IP (leave blank if none yet -- skips the forwarding rule entirely)",
+    )?;
+    let crow_api_mgmt_port = if crow_api_mgmt_ip.is_some() {
+        Some(wiz::prompt(
+            args.crow_api_mgmt_port,
+            "crowCloud control plane port",
+            Some(8080),
+        )?)
+    } else {
+        None
+    };
 
     let cfg = vyos_flavor_iso::VyosFlavorConfig {
         base: vyos_iso::VyosBuildConfig {
@@ -953,6 +1003,8 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
             bgp_peer_password,
             dns_servers,
             allow_password_auth,
+            crow_api_mgmt_ip,
+            crow_api_mgmt_port,
         },
     };
 
