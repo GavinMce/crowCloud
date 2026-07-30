@@ -75,18 +75,29 @@ const DETECT_TRUNK_AND_UPLINK: &str = r#"detect_trunk_and_uplink() {
         candidates+=("$iface")
     done
 
-    # Give link state a moment to settle after bringing interfaces up.
-    # Confirmed live: 3s was too short on a bnx2 (Broadcom NetXtreme II)
-    # NIC specifically -- its autonegotiation is slower than more modern
-    # chips, and the driver's also just been reloaded (to pick up
-    # firmware, see bnx2_firmware) immediately before this runs, adding
-    # to the settle time needed.
-    sleep 10
-
-    for iface in "${candidates[@]}"; do
-        if [ "$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo 0)" = "1" ]; then
-            linked+=("$iface")
-        fi
+    # Poll for link state to settle rather than a single fixed sleep --
+    # confirmed live: a flat 10s sleep was enough for a manual re-run on
+    # an already-idle system, but not on an actual cold boot via
+    # @reboot, where kernel init/other services/disk I/O all compete for
+    # the same window. bnx2 (Broadcom NetXtreme II) autonegotiation is
+    # also slower than more modern chips, and the driver's just been
+    # reloaded (to pick up firmware, see bnx2_firmware) immediately
+    # before this runs, adding further to the settle time needed -- a
+    # bounded poll adapts to however long that actually takes instead of
+    # guessing a single magic number that keeps needing to be bumped
+    # under different boot conditions.
+    local waited=0
+    local max_wait=60
+    while [ "$waited" -lt "$max_wait" ]; do
+        linked=()
+        for iface in "${candidates[@]}"; do
+            if [ "$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo 0)" = "1" ]; then
+                linked+=("$iface")
+            fi
+        done
+        [ "${#linked[@]}" -ge 2 ] && break
+        sleep 2
+        waited=$((waited + 2))
     done
 
     if [ "${#linked[@]}" -ne 2 ]; then
@@ -352,6 +363,20 @@ mod tests {
         let out = render_fabric_init_script(&cfg());
         assert!(out.contains("refusing to apply a partial fabric config"));
         assert!(out.contains("refusing to guess"));
+    }
+
+    #[test]
+    fn polls_for_link_state_instead_of_a_single_fixed_sleep() {
+        // Confirmed live: a flat sleep long enough for a manual re-run on
+        // an idle system still wasn't enough on an actual cold boot via
+        // @reboot, where kernel init/other services/disk I/O all compete
+        // for the same window -- a bounded poll adapts to however long
+        // that actually takes instead of a magic number that keeps
+        // needing to be bumped under different boot conditions.
+        let out = render_fabric_init_script(&cfg());
+        assert!(!out.contains("sleep 10"));
+        assert!(out.contains("max_wait=60"));
+        assert!(out.contains("while [ \"$waited\" -lt \"$max_wait\" ]"));
     }
 
     #[test]
