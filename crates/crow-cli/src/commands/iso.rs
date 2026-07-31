@@ -384,6 +384,13 @@ pub struct ProxmoxBuildArgs {
     /// A locally-provided Proxmox VE ISO -- never auto-downloaded
     #[arg(long)]
     pub base_iso: Option<PathBuf>,
+    /// SSH public key path for the seed VM specifically (#67) -- not
+    /// asked in the wizard (advanced/optional, like --disk-filter):
+    /// Debian's stock cloud image has no password login and no key of
+    /// its own, so omitting this leaves the seed VM entirely
+    /// console/SSH-inaccessible once cloud-init applies.
+    #[arg(long)]
+    pub seed_ssh_pubkey: Option<PathBuf>,
     #[arg(long, default_value = "./build")]
     pub out: PathBuf,
     /// Skip invoking `proxmox-auto-install-assistant` -- just render
@@ -1128,6 +1135,14 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
             .map(|f| f.ospf_area.clone())
             .or(Some("0".to_string())),
     )?;
+    let seed_ssh_pubkey = args
+        .seed_ssh_pubkey
+        .map(|path| {
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("reading seed SSH public key at {}", path.display()))
+                .map(|s| s.trim().to_string())
+        })
+        .transpose()?;
 
     let cfg = proxmox_iso::ProxmoxBuildConfig {
         root_password_hash,
@@ -1151,6 +1166,7 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         bgp_route_reflector_ip,
         underlay_prefix,
         ospf_area,
+        seed_ssh_pubkey,
     };
 
     std::fs::create_dir_all(&args.out)?;
