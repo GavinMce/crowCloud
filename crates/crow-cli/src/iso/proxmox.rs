@@ -282,6 +282,23 @@ echo "==> Bringing up trunk (${{TRUNK_IF}}) at the fabric MTU"
 ip link set dev "${{TRUNK_IF}}" up
 ip link set dev "${{TRUNK_IF}}" mtu "${{TRUNK_MTU}}"
 
+echo "==> Ensuring vmbr0 is VLAN-aware (needed for any VM's tagged NIC)"
+# Confirmed live: Proxmox's per-VM `tag=` parameter on a guest NIC (used
+# below for the seed VM) has undefined behavior on a bridge that isn't
+# VLAN-aware. Without this, starting a VM with a tagged NIC broke
+# connectivity on that same VLAN for the whole host -- including this
+# trunk's own VLAN subinterfaces, entirely unrelated to the VM itself --
+# and the breakage persisted until a full reboot. Ruled out first:
+# firewall (none configured on either side), MTU (fixed separately, no
+# change), switch-side loop protection (disabled, no change), MAC
+# conflicts (none found). vmbr0 is created by the base installer, not
+# by this hook, so its stanza already exists in /etc/network/interfaces
+# and needs editing in place rather than appending a new one.
+if ! grep -q "bridge-vlan-aware yes" /etc/network/interfaces; then
+    sed -i '/^iface vmbr0/a\    bridge-vlan-aware yes\n    bridge-vids 2-4094' /etc/network/interfaces
+    ifreload -a || true
+fi
+
 echo "==> Configuring management VLAN (${{TRUNK_IF}}.${{MGMT_VLAN}})"
 cat >> /etc/network/interfaces <<IFACES
 
@@ -822,6 +839,24 @@ mod tests {
         // reach MGMT_GATEWAY, regardless of what IP it's given.
         let out = render_post_install_hook(&cfg());
         assert!(out.contains(r#"--net0 "virtio,bridge=${DEFAULT_BRIDGE},tag=${MGMT_VLAN}""#));
+    }
+
+    #[test]
+    fn hook_makes_vmbr0_vlan_aware_before_creating_a_tagged_guest_nic() {
+        // Confirmed live: without this, starting a VM with a tagged NIC
+        // (`tag=${MGMT_VLAN}` above) broke connectivity on that same VLAN
+        // for the whole host, persisting until a full reboot -- firewall,
+        // MTU, switch loop protection, and MAC conflicts were all ruled
+        // out first.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("bridge-vlan-aware yes"));
+        assert!(out.contains("bridge-vids 2-4094"));
+        let vlan_aware_pos = out.find("bridge-vlan-aware yes").unwrap();
+        let create_vm_pos = out.find("qm create").unwrap();
+        assert!(
+            vlan_aware_pos < create_vm_pos,
+            "vmbr0 must be made VLAN-aware before the seed VM's tagged NIC is created"
+        );
     }
 
     #[test]
