@@ -154,14 +154,14 @@ The repository is a Cargo workspace. All dependency versions are pinned once in 
 
 Starting from nothing but a fresh Linux VM (e.g. one you created on your
 Proxmox host — crowCloud can't provision that first VM for you, since it
-isn't running yet) — [`deploy/bootstrap.sh`](deploy/bootstrap.sh) installs
-K3s, Helm, CloudNativePG, and the crowcloud chart in one shot, then prints
-a URL:
+isn't running yet) — [`crates/crow-cli/deploy/bootstrap.sh`](crates/crow-cli/deploy/bootstrap.sh)
+installs K3s, Helm, CloudNativePG, and the crowcloud chart in one shot,
+then prints a URL:
 
 ```bash
 git clone https://github.com/GavinMce/crowCloud.git
 cd crowCloud
-sudo ./deploy/bootstrap.sh
+sudo ./crates/crow-cli/deploy/bootstrap.sh
 ```
 
 This is a two-stage flow by nature: bootstrapping the management cluster

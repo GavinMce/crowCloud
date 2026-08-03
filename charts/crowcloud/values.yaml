@@ -53,7 +53,7 @@ operator:
 postgres:
   # When true, this chart creates a CloudNativePG Cluster resource and wires
   # DATABASE_URL to it automatically. Requires the CloudNativePG operator to
-  # already be installed in the cluster (see deploy/bootstrap.sh).
+  # already be installed in the cluster (see crates/crow-cli/deploy/bootstrap.sh).
   enabled: true
   storageSize: 10Gi
   storageClass: ""
@@ -68,7 +68,7 @@ frontend:
   replicas: 1
   port: 80
   service:
-    # NodePort requires no ingress controller — deploy/bootstrap.sh sets
+    # NodePort requires no ingress controller — crates/crow-cli/deploy/bootstrap.sh sets
     # this explicitly so it can print a reachable URL immediately. Leave as
     # ClusterIP if you're fronting this with your own Ingress instead.
     type: ClusterIP

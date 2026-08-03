@@ -118,7 +118,14 @@ pub enum DiskSelection {
 /// -- baking it in keeps this in sync with the real script automatically
 /// (single source of truth) without a runtime dependency on fetching it
 /// from anywhere.
-const BOOTSTRAP_SH: &str = include_str!("../../../../deploy/bootstrap.sh");
+///
+/// Lives under `crates/crow-cli/deploy/` rather than a repo-root
+/// `deploy/`, because `cargo package` builds each crate in isolation and
+/// can't see files outside the crate's own manifest directory -- an
+/// `include_str!` reaching outside it fails `cargo package`'s build
+/// verification (confirmed live: this is what blocked release-plz's
+/// `git_only` mode from ever computing a diff).
+const BOOTSTRAP_SH: &str = include_str!("../../deploy/bootstrap.sh");
 
 /// Cloud-init user-data for the seed VM (#67) -- writes and runs
 /// `bootstrap.sh` unattended, with `CROW_FLEET_SECRET` set so the
