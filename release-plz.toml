@@ -1,5 +1,10 @@
 [workspace]
 publish = false
+# None of these crates are published to crates.io, so release-plz can never
+# see a "registry_package_exists" match and would otherwise silently treat
+# every package as unchanged forever, no matter how many feat/fix commits
+# land. git_only makes it diff against git tags instead.
+git_only = true
 changelog_path = "CHANGELOG.md"
 
 # crow-api is the workspace release driver: its tag (v{{ version }}) is what

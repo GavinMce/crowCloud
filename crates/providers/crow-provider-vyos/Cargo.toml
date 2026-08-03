@@ -5,8 +5,8 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-crow-core = { path = "../../crow-core" }
-crow-vyos-ssh = { path = "../../crow-vyos-ssh" }
+crow-core.workspace = true
+crow-vyos-ssh.workspace = true
 
 tokio.workspace = true
 async-trait.workspace = true
