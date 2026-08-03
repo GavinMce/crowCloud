@@ -18,7 +18,7 @@ pub mod virtual_machine;
 pub async fn run_all(
     client: Client,
     db: PgPool,
-    network: Arc<VyosNetworkProvider>,
+    network: Option<Arc<VyosNetworkProvider>>,
 ) -> anyhow::Result<()> {
     tokio::try_join!(
         virtual_machine::run(client.clone(), db.clone()),

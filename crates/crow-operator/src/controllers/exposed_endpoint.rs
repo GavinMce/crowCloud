@@ -44,7 +44,18 @@ struct Ctx {
     network: Arc<VyosNetworkProvider>,
 }
 
-pub async fn run(client: Client, network: Arc<VyosNetworkProvider>) -> anyhow::Result<()> {
+pub async fn run(client: Client, network: Option<Arc<VyosNetworkProvider>>) -> anyhow::Result<()> {
+    let Some(network) = network else {
+        // Unconfigured for this operator instance (see
+        // `main.rs::build_vyos_network_provider`) -- stay a no-op stub,
+        // same as the other not-yet-configured/implemented controllers,
+        // rather than crashing the whole operator over optional
+        // functionality.
+        tracing::info!("VyOS not configured -- exposed_endpoint controller is disabled");
+        std::future::pending::<()>().await;
+        return Ok(());
+    };
+
     let api: Api<ExposedEndpoint> = Api::namespaced(client.clone(), VM_NAMESPACE);
     let ctx = Arc::new(Ctx { client, network });
 
