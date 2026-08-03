@@ -51,6 +51,17 @@ curl -sfL https://get.k3s.io | sh -s - \
   --disable traefik \
   --disable servicelb
 
+# Confirmed live: k3s's own `kubectl` is a symlink to the k3s binary
+# itself, which special-cases its argv[0] to auto-find
+# /etc/rancher/k3s/k3s.yaml with no KUBECONFIG needed -- so the wait
+# loop right below this works fine either way. `helm`, installed
+# separately just below, is a completely different binary with no such
+# special-casing: it only ever checks --kubeconfig/KUBECONFIG/
+# ~/.kube/config, none of which point here by default. Every `helm`
+# command after this failed with "Kubernetes cluster unreachable" until
+# this was set, despite kubectl itself working the entire time.
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
 echo "==> Waiting for K3s to be ready"
 until kubectl get nodes 2>/dev/null | grep -q "Ready"; do sleep 2; done
 
