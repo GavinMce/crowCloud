@@ -61,6 +61,18 @@ pub struct VyosBuildConfig {
     /// while validating key-based access on a given box is a reasonable
     /// choice, not a security regression to silently prevent.
     pub allow_password_auth: bool,
+    /// crowCloud control plane's mgmt-VLAN address -- when both this and
+    /// `crow_api_mgmt_port` are set, bakes in a NAT destination rule
+    /// forwarding that same port on the uplink straight to it. This is
+    /// specifically for reaching the control plane itself from the
+    /// upstream LAN (e.g. during bootstrap, before it's up enough to
+    /// configure an `ExposedEndpoint` for itself) -- a separate,
+    /// bootstrap-level concern from `crow-provider-vyos`'s NAT rules,
+    /// which the operator manages per-`ExposedEndpoint` at runtime.
+    /// Optional: a fabric with no crowCloud instance yet has nothing to
+    /// forward to.
+    pub crow_api_mgmt_ip: Option<String>,
+    pub crow_api_mgmt_port: Option<u16>,
 }
 
 pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
@@ -167,6 +179,31 @@ pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
     ));
     lines.push("set nat source rule 100 translation address 'masquerade'".to_string());
 
+    // Forwards the control plane's own port straight through from the
+    // uplink -- rule 200, clear of both the egress rule above (100) and
+    // the 1000+ range crow-provider-vyos's ExposedEndpoint reconciler
+    // uses for its own dynamically-created rules, so the two mechanisms
+    // can never collide on a rule number even though they both write to
+    // the same `nat destination` tree.
+    if let (Some(ip), Some(port)) = (&cfg.crow_api_mgmt_ip, cfg.crow_api_mgmt_port) {
+        lines
+            .push("set nat destination rule 200 description 'crowcloud-control-plane'".to_string());
+        lines.push(format!(
+            "set nat destination rule 200 inbound-interface name '{}'",
+            cfg.uplink_interface
+        ));
+        lines.push("set nat destination rule 200 protocol 'tcp'".to_string());
+        lines.push(format!(
+            "set nat destination rule 200 destination port '{port}'"
+        ));
+        lines.push(format!(
+            "set nat destination rule 200 translation address '{ip}'"
+        ));
+        lines.push(format!(
+            "set nat destination rule 200 translation port '{port}'"
+        ));
+    }
+
     // Confirmed live: jumbo frames on the trunk (fabric) side meet a
     // standard 1500-MTU uplink -- without clamping, a remote server can
     // advertise a large MSS during the TCP handshake and then stall
@@ -269,6 +306,8 @@ mod tests {
             bgp_peer_password: "fabric-secret".into(),
             dns_servers: vec!["8.8.8.8".into(), "8.8.4.4".into()],
             allow_password_auth: false,
+            crow_api_mgmt_ip: None,
+            crow_api_mgmt_port: None,
         }
     }
 
@@ -363,6 +402,34 @@ mod tests {
         assert!(out.contains("set nat source rule 100 source address '10.255.20.0/24'"));
         assert!(out.contains("set nat source rule 100 translation address 'masquerade'"));
         assert!(!out.contains("10.255.10.0/24'\nset nat"));
+    }
+
+    #[test]
+    fn omits_the_control_plane_nat_rule_when_not_configured() {
+        // A fabric with no crowCloud instance yet has nothing to forward
+        // to -- must not emit a broken/empty NAT rule.
+        let out = render_configure_script(&cfg());
+        assert!(!out.contains("nat destination rule 200"));
+    }
+
+    #[test]
+    fn forwards_the_control_plane_port_from_the_uplink_when_configured() {
+        // The whole point: reachable from the upstream LAN (e.g. during
+        // bootstrap, before it's up enough to configure an
+        // ExposedEndpoint for itself) -- separate from and never
+        // colliding with crow-provider-vyos's own dynamically-numbered
+        // (1000+) ExposedEndpoint rules.
+        let cfg = VyosBuildConfig {
+            crow_api_mgmt_ip: Some("10.255.20.50".to_string()),
+            crow_api_mgmt_port: Some(8080),
+            ..cfg()
+        };
+        let out = render_configure_script(&cfg);
+        assert!(out.contains("set nat destination rule 200 inbound-interface name 'eth1'"));
+        assert!(out.contains("set nat destination rule 200 protocol 'tcp'"));
+        assert!(out.contains("set nat destination rule 200 destination port '8080'"));
+        assert!(out.contains("set nat destination rule 200 translation address '10.255.20.50'"));
+        assert!(out.contains("set nat destination rule 200 translation port '8080'"));
     }
 
     #[test]
