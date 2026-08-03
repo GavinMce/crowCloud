@@ -62,20 +62,37 @@ async fn ensure_namespace(client: &Client) -> anyhow::Result<()> {
 /// on different Proxmox nodes) -- so its SSH connection details are
 /// operator-level config (env vars), not a per-CR reference or a Postgres
 /// `providers` row.
-fn build_vyos_network_provider() -> crow_provider_vyos::VyosNetworkProvider {
-    crow_provider_vyos::VyosNetworkProvider {
-        host: std::env::var("VYOS_HOST").expect("VYOS_HOST must be set for crow-operator"),
+///
+/// `None` when unconfigured -- `ExposedEndpoint` is optional functionality
+/// (VM provisioning and IP pools don't need VyOS at all), so a fabric
+/// that hasn't set these up yet must not crash the whole operator over
+/// it. `controllers::run_all` runs `exposed_endpoint` as a no-op stub in
+/// that case, same as the other not-yet-configured/implemented
+/// controllers.
+fn build_vyos_network_provider() -> Option<crow_provider_vyos::VyosNetworkProvider> {
+    let host = std::env::var("VYOS_HOST").ok();
+    let ssh_key = std::env::var("VYOS_SSH_KEY_PATH").ok();
+    let uplink_interface = std::env::var("VYOS_UPLINK_INTERFACE").ok();
+
+    let (Some(host), Some(ssh_key), Some(uplink_interface)) = (host, ssh_key, uplink_interface)
+    else {
+        tracing::info!(
+            "VYOS_HOST/VYOS_SSH_KEY_PATH/VYOS_UPLINK_INTERFACE not fully set -- \
+             ExposedEndpoint reconciliation is disabled for this operator instance"
+        );
+        return None;
+    };
+
+    Some(crow_provider_vyos::VyosNetworkProvider {
+        host,
         port: std::env::var("VYOS_SSH_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(22),
         user: std::env::var("VYOS_SSH_USER").unwrap_or_else(|_| "vyos".to_string()),
-        ssh_key: std::env::var("VYOS_SSH_KEY_PATH")
-            .expect("VYOS_SSH_KEY_PATH must be set for crow-operator")
-            .into(),
-        uplink_interface: std::env::var("VYOS_UPLINK_INTERFACE")
-            .expect("VYOS_UPLINK_INTERFACE must be set for crow-operator"),
-    }
+        ssh_key: ssh_key.into(),
+        uplink_interface,
+    })
 }
 
 #[tokio::main]
@@ -95,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for crow-operator");
     let db = crow_db::connect(&database_url).await?;
 
-    let network = Arc::new(build_vyos_network_provider());
+    let network = build_vyos_network_provider().map(Arc::new);
 
     controllers::run_all(client, db, network).await?;
 
