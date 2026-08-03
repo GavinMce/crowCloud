@@ -63,6 +63,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # misc
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
 
 # cli
 clap = { version = "4", features = ["derive", "env"] }
