@@ -162,6 +162,10 @@ pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
         "set interfaces ethernet {} vif {} address '{}/{}'",
         cfg.trunk_interface, cfg.mgmt_vlan, cfg.mgmt_ip, cfg.mgmt_prefix
     ));
+    lines.push(format!(
+        "set interfaces ethernet {} vif {} mtu '{}'",
+        cfg.trunk_interface, cfg.mgmt_vlan, cfg.trunk_mtu
+    ));
 
     // Confirmed live: a fresh deployment had zero NAT rules configured
     // at all, so the mgmt VLAN (needed to fetch the seed image, install
@@ -360,6 +364,18 @@ mod tests {
         let out = render_configure_script(&cfg());
         assert!(out.contains("set interfaces ethernet eth0 mtu '9000'"));
         assert!(out.contains("set interfaces ethernet eth0 vif 10 mtu '9000'"));
+    }
+
+    #[test]
+    fn sets_trunk_mtu_on_the_mgmt_vif_too() {
+        // Confirmed live: the mgmt vif got an address but never an MTU,
+        // silently falling back to the default (1500) while the trunk
+        // and underlay vif both ran at the configured jumbo MTU (9000)
+        // -- on at least one switch this broke connectivity to the mgmt
+        // VLAN specifically (ARP never resolved) while the underlay VLAN,
+        // on the same physical trunk/ports, worked fine throughout.
+        let out = render_configure_script(&cfg());
+        assert!(out.contains("set interfaces ethernet eth0 vif 20 mtu '9000'"));
     }
 
     #[test]
