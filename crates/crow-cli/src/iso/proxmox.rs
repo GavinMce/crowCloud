@@ -282,6 +282,17 @@ echo "==> Bringing up trunk (${{TRUNK_IF}}) at the fabric MTU"
 ip link set dev "${{TRUNK_IF}}" up
 ip link set dev "${{TRUNK_IF}}" mtu "${{TRUNK_MTU}}"
 
+# Confirmed live: the `ip link set` above only affects the running
+# kernel state for this boot -- /etc/network/interfaces never gets the
+# trunk's own mtu, only the VLAN vifs' (further below) do. On any
+# `ifreload`/reboot after this hook's one-time run, ifupdown2 resets the
+# trunk back to the interfaces-file default (1500, since nothing in its
+# existing stanza says otherwise) while the vifs still claim mtu 9000,
+# which a vif can never legitimately exceed its parent's actual MTU by.
+if ! grep -q "    mtu ${{TRUNK_MTU}}" /etc/network/interfaces; then
+    sed -i "/^iface ${{TRUNK_IF}} /a\    mtu ${{TRUNK_MTU}}" /etc/network/interfaces
+fi
+
 echo "==> Ensuring vmbr0 is VLAN-aware (needed for any VM's tagged NIC)"
 # Confirmed live: Proxmox's per-VM `tag=` parameter on a guest NIC (used
 # below for the seed VM) has undefined behavior on a bridge that isn't
@@ -787,6 +798,31 @@ mod tests {
         assert!(
             mtu_pos < vlan_child_pos,
             "trunk MTU must be raised before any VLAN child is created on it"
+        );
+    }
+
+    #[test]
+    fn hook_persists_the_trunk_mtu_so_it_survives_ifreload_or_reboot() {
+        // Confirmed live: the `ip link set` above only affects the
+        // running kernel state for this boot. On any ifreload/reboot
+        // after this hook's one-time run, ifupdown2 resets the trunk
+        // back to the interfaces-file default (1500, nothing in its
+        // stanza said otherwise) while the vifs still claim mtu 9000 --
+        // `ifreload` then warns/rejects it since a vif can never exceed
+        // its parent's actual MTU.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains(
+            "sed -i \"/^iface ${TRUNK_IF} /a\\    mtu ${TRUNK_MTU}\" /etc/network/interfaces"
+        ));
+        let persist_pos = out
+            .find("sed -i \"/^iface ${TRUNK_IF} /a")
+            .expect("trunk MTU must be persisted into /etc/network/interfaces");
+        let vlan_child_pos = out
+            .find("auto ${TRUNK_IF}.${MGMT_VLAN}")
+            .expect("mgmt VLAN child must be created");
+        assert!(
+            persist_pos < vlan_child_pos,
+            "trunk MTU must be persisted before any VLAN child is created on it"
         );
     }
 
