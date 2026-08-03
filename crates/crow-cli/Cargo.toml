@@ -43,4 +43,4 @@ dirs = "6"
 rpassword = "7"
 dialoguer = "0.11"
 
-crow-vyos-ssh = { path = "../crow-vyos-ssh" }
+crow-vyos-ssh.workspace = true

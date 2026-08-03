@@ -9,11 +9,11 @@ name = "crow-operator"
 path = "src/main.rs"
 
 [dependencies]
-crow-core = { path = "../crow-core" }
-crow-db = { path = "../crow-db" }
-crow-provider-registry = { path = "../providers/crow-provider-registry" }
-crow-provider-vyos = { path = "../providers/crow-provider-vyos" }
-crow-resource-vm = { path = "../resources/crow-resource-vm" }
+crow-core.workspace = true
+crow-db.workspace = true
+crow-provider-registry.workspace = true
+crow-provider-vyos.workspace = true
+crow-resource-vm.workspace = true
 
 tokio.workspace = true
 kube.workspace = true

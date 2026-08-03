@@ -5,9 +5,9 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-crow-core = { path = "../../crow-core" }
-crow-provider-proxmox = { path = "../crow-provider-proxmox" }
-crow-db = { path = "../../crow-db" }
+crow-core.workspace = true
+crow-provider-proxmox.workspace = true
+crow-db.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true

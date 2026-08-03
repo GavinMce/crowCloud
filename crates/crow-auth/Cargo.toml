@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-crow-db = { path = "../crow-db" }
+crow-db.workspace = true
 
 tokio.workspace = true
 serde.workspace = true

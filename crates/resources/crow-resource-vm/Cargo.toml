@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-crow-core = { path = "../../crow-core" }
+crow-core.workspace = true
 
 tokio.workspace = true
 async-trait.workspace = true

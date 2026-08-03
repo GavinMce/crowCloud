@@ -9,11 +9,11 @@ name = "crow-api"
 path = "src/main.rs"
 
 [dependencies]
-crow-core = { path = "../crow-core" }
-crow-db = { path = "../crow-db" }
-crow-auth = { path = "../crow-auth" }
-crow-provider-registry = { path = "../providers/crow-provider-registry" }
-crow-provider-proxmox = { path = "../providers/crow-provider-proxmox" }
+crow-core.workspace = true
+crow-db.workspace = true
+crow-auth.workspace = true
+crow-provider-registry.workspace = true
+crow-provider-proxmox.workspace = true
 
 async-trait.workspace = true
 tokio.workspace = true
