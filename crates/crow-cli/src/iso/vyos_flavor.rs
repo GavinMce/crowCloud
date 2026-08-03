@@ -75,13 +75,29 @@ const DETECT_TRUNK_AND_UPLINK: &str = r#"detect_trunk_and_uplink() {
         candidates+=("$iface")
     done
 
-    # Give link state a moment to settle after bringing interfaces up.
-    sleep 3
-
-    for iface in "${candidates[@]}"; do
-        if [ "$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo 0)" = "1" ]; then
-            linked+=("$iface")
-        fi
+    # Poll for link state to settle rather than a single fixed sleep --
+    # confirmed live: a flat 10s sleep was enough for a manual re-run on
+    # an already-idle system, but not on an actual cold boot via
+    # @reboot, where kernel init/other services/disk I/O all compete for
+    # the same window. bnx2 (Broadcom NetXtreme II) autonegotiation is
+    # also slower than more modern chips, and the driver's just been
+    # reloaded (to pick up firmware, see bnx2_firmware) immediately
+    # before this runs, adding further to the settle time needed -- a
+    # bounded poll adapts to however long that actually takes instead of
+    # guessing a single magic number that keeps needing to be bumped
+    # under different boot conditions.
+    local waited=0
+    local max_wait=60
+    while [ "$waited" -lt "$max_wait" ]; do
+        linked=()
+        for iface in "${candidates[@]}"; do
+            if [ "$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo 0)" = "1" ]; then
+                linked+=("$iface")
+            fi
+        done
+        [ "${#linked[@]}" -ge 2 ] && break
+        sleep 2
+        waited=$((waited + 2))
     done
 
     if [ "${#linked[@]}" -ne 2 ]; then
@@ -160,6 +176,8 @@ set -euo pipefail
 
 UPLINK_GATEWAY_PROBE="{uplink_gateway_probe}"
 
+{install_bnx2_firmware}
+
 {detect_trunk_and_uplink}
 
 read -r TRUNK_IF UPLINK_IF < <(detect_trunk_and_uplink) || {{
@@ -176,40 +194,41 @@ VBASH
 {install_caddy}
 "#,
         uplink_gateway_probe = uplink_gateway_probe,
+        install_bnx2_firmware = crate::iso::bnx2_firmware::render_install_script(),
         detect_trunk_and_uplink = DETECT_TRUNK_AND_UPLINK,
         set_commands = set_commands,
-        install_caddy = INSTALL_CADDY,
+        install_caddy = render_install_caddy(),
     )
 }
 
 /// Installs Caddy for the HTTP/subdomain-routing exposure path
 /// (`NetworkProvider::expose_http`, pushed later over SSH per
-/// `ExposedEndpoint`) -- VyOS is Debian-based underneath, so this is a
-/// normal apt install via Caddy's own Cloudsmith-hosted repo, not
-/// anything VyOS-specific. Runs on every `@reboot`, same as the rest of
-/// this script -- idempotent (apt no-ops on an already-installed package,
-/// and the base Caddyfile write never touches `sites/*.caddy`, which is
-/// only ever managed by the operator over SSH afterward).
-const INSTALL_CADDY: &str = r#"echo "==> Installing Caddy (HTTP exposure path)"
-if ! command -v caddy >/dev/null 2>&1; then
-    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-        | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-        > /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update
-    apt-get install -y caddy
-fi
+/// `ExposedEndpoint`). Baked in directly from a pre-fetched `.deb` (see
+/// `caddy_package`) rather than installed via apt at first boot --
+/// confirmed live: the apt-based install (Caddy's own official Cloudsmith
+/// instructions) hit real breakage (unavailable keyring packages, then a
+/// DNS/connectivity gap at exactly the moment first boot needed to reach
+/// Cloudsmith). Runs on every `@reboot`, same as the rest of this script
+/// -- idempotent (`dpkg -i` no-ops if already installed, and the base
+/// Caddyfile write never touches `sites/*.caddy`, which is only ever
+/// managed by the operator over SSH afterward).
+fn render_install_caddy() -> String {
+    format!(
+        r#"echo "==> Installing Caddy (HTTP exposure path)"
+{install_caddy_package}
 
 mkdir -p /etc/caddy/sites
-if [ ! -f /etc/caddy/Caddyfile ] || ! grep -q "import sites/\*.caddy" /etc/caddy/Caddyfile; then
+if [ ! -f /etc/caddy/Caddyfile ] || ! grep -qF 'import sites/*.caddy' /etc/caddy/Caddyfile; then
     cat > /etc/caddy/Caddyfile <<'CADDYFILE'
 import sites/*.caddy
 CADDYFILE
 fi
 
 systemctl enable caddy >/dev/null 2>&1 || true
-systemctl restart caddy"#;
+systemctl restart caddy"#,
+        install_caddy_package = crate::iso::caddy_package::render_install_script(),
+    )
+}
 
 /// `/etc/cron.d/crowcloud-fabric-init` -- no `systemctl enable`
 /// equivalent needed, cron.d files are read directly with no separate
@@ -254,9 +273,13 @@ data = {script_data}
 [[includes_chroot]]
 path = "etc/cron.d/crowcloud-fabric-init"
 data = {cron_data}
-"#,
+
+{bnx2_firmware}
+{caddy_package}"#,
         script_data = toml_multiline_string(&render_fabric_init_script(cfg)),
         cron_data = toml_multiline_string(&render_cron_entry()),
+        bnx2_firmware = crate::iso::bnx2_firmware::render_includes_chroot_toml(),
+        caddy_package = crate::iso::caddy_package::render_includes_chroot_toml(),
     )
 }
 
@@ -294,6 +317,8 @@ mod tests {
                 bgp_peer_password: "fabric-secret".into(),
                 dns_servers: vec!["8.8.8.8".into(), "8.8.4.4".into()],
                 allow_password_auth: false,
+                crow_api_mgmt_ip: None,
+                crow_api_mgmt_port: None,
             },
         }
     }
@@ -343,6 +368,20 @@ mod tests {
     }
 
     #[test]
+    fn polls_for_link_state_instead_of_a_single_fixed_sleep() {
+        // Confirmed live: a flat sleep long enough for a manual re-run on
+        // an idle system still wasn't enough on an actual cold boot via
+        // @reboot, where kernel init/other services/disk I/O all compete
+        // for the same window -- a bounded poll adapts to however long
+        // that actually takes instead of a magic number that keeps
+        // needing to be bumped under different boot conditions.
+        let out = render_fabric_init_script(&cfg());
+        assert!(!out.contains("sleep 10"));
+        assert!(out.contains("max_wait=60"));
+        assert!(out.contains("while [ \"$waited\" -lt \"$max_wait\" ]"));
+    }
+
+    #[test]
     fn reuses_the_real_configure_script_renderer_not_a_reimplementation() {
         // Confirmed by construction: both `iso vyos apply` and this
         // baked-in script must apply identical fabric config, so they
@@ -363,7 +402,11 @@ mod tests {
     #[test]
     fn fabric_init_script_installs_caddy_for_the_http_exposure_path() {
         let out = render_fabric_init_script(&cfg());
-        assert!(out.contains("apt-get install -y caddy"));
+        // Baked-in .deb via dpkg, not apt -- confirmed live, the apt-based
+        // install hit unavailable keyring packages and a network gap at
+        // exactly the moment first boot needed to reach Cloudsmith.
+        assert!(out.contains("dpkg -i"));
+        assert!(!out.contains("apt-get install -y caddy"));
         assert!(out.contains("import sites/*.caddy"));
         assert!(out.contains("systemctl enable caddy"));
         // Idempotent across every @reboot re-run, not just first boot --
