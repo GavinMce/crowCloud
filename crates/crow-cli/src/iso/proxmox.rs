@@ -275,46 +275,56 @@ apt-get install -y frr
 
 echo "==> Bringing up trunk (${{TRUNK_IF}}) at the fabric MTU"
 # Confirmed live: a VLAN subinterface can never exceed its parent's MTU
-# at creation time -- bringing up the mgmt VLAN (below) before the
-# physical trunk was raised to jumbo frames silently capped it at the
-# default 1500, even though its own interfaces stanza said mtu 9000.
-# The trunk's MTU must be set before any VLAN child is created on it.
+# at creation time -- bringing up any VLAN child before the physical
+# trunk was raised to jumbo frames silently capped it at the default
+# 1500, even though its own interfaces stanza said mtu 9000. The
+# trunk's MTU must be set before any VLAN child is created on it.
 ip link set dev "${{TRUNK_IF}}" up
 ip link set dev "${{TRUNK_IF}}" mtu "${{TRUNK_MTU}}"
 
 # Confirmed live: the `ip link set` above only affects the running
 # kernel state for this boot -- /etc/network/interfaces never gets the
-# trunk's own mtu, only the VLAN vifs' (further below) do. On any
-# `ifreload`/reboot after this hook's one-time run, ifupdown2 resets the
-# trunk back to the interfaces-file default (1500, since nothing in its
-# existing stanza says otherwise) while the vifs still claim mtu 9000,
-# which a vif can never legitimately exceed its parent's actual MTU by.
+# trunk's own mtu on its own. On any `ifreload`/reboot after this
+# hook's one-time run, ifupdown2 resets the trunk back to the
+# interfaces-file default (1500, since nothing in its existing stanza
+# says otherwise), which then caps everything layered on top of it.
 if ! grep -q "    mtu ${{TRUNK_MTU}}" /etc/network/interfaces; then
     sed -i "/^iface ${{TRUNK_IF}} /a\    mtu ${{TRUNK_MTU}}" /etc/network/interfaces
 fi
 
-echo "==> Ensuring vmbr0 is VLAN-aware (needed for any VM's tagged NIC)"
-# Confirmed live: Proxmox's per-VM `tag=` parameter on a guest NIC (used
-# below for the seed VM) has undefined behavior on a bridge that isn't
-# VLAN-aware. Without this, starting a VM with a tagged NIC broke
-# connectivity on that same VLAN for the whole host -- including this
-# trunk's own VLAN subinterfaces, entirely unrelated to the VM itself --
-# and the breakage persisted until a full reboot. Ruled out first:
-# firewall (none configured on either side), MTU (fixed separately, no
-# change), switch-side loop protection (disabled, no change), MAC
-# conflicts (none found). vmbr0 is created by the base installer, not
-# by this hook, so its stanza already exists in /etc/network/interfaces
-# and needs editing in place rather than appending a new one.
+echo "==> Configuring vmbr0 as a proper VLAN-aware bridge"
+# Confirmed live, the hard way, across several real bugs stacked on top
+# of each other -- this whole block replaces an earlier, broken
+# approach that put the host's own underlay/mgmt IPs on classic 8021q
+# subinterfaces of the physical trunk itself (${{TRUNK_IF}}.${{UNDERLAY_VLAN}} /
+# ${{TRUNK_IF}}.${{MGMT_VLAN}}), *alongside* also enslaving that same physical
+# trunk to vmbr0 for the seed VM's tagged NIC below. Those are two
+# different, competing VLAN mechanisms fighting over the same physical
+# port, and starting the VM broke mgmt-VLAN connectivity for the whole
+# host -- including traffic having nothing to do with the VM -- until a
+# full reboot, no matter what else was fixed (MTU, firewalls, switch
+# loop protection, MAC conflicts -- all real, all ruled out, none of it
+# was the actual cause). The official pattern (per Proxmox's own docs)
+# is a single VLAN-aware bridge for everything: the host's own VLAN IPs
+# live on vmbr0.<vlan> (a subinterface of the *bridge*, not the NIC),
+# and Proxmox's per-VM `tag=` handles guest traffic the same way.
+#
+# `bridge-vids` on the bridge's own stanza does NOT automatically grant
+# the physical port membership in those VLANs, and the bridge device
+# itself separately needs explicit membership (via `... self`) before
+# it can host any vmbr0.<vlan> subinterface at all -- confirmed live,
+# this is what left the trunk port stuck reporting only its default
+# PVID (1) in `bridge vlan show` no matter what else was configured.
 if ! grep -q "bridge-vlan-aware yes" /etc/network/interfaces; then
-    sed -i '/^iface vmbr0/a\    bridge-vlan-aware yes\n    bridge-vids 2-4094' /etc/network/interfaces
+    sed -i "/^iface vmbr0/a\\    bridge-vlan-aware yes\\n    bridge-vids 2-4094\\n    mtu ${{TRUNK_MTU}}\\n    post-up bridge vlan add dev ${{TRUNK_IF}} vid ${{UNDERLAY_VLAN}}\\n    post-up bridge vlan add dev ${{TRUNK_IF}} vid ${{MGMT_VLAN}}\\n    post-up bridge vlan add dev vmbr0 vid ${{UNDERLAY_VLAN}} self\\n    post-up bridge vlan add dev vmbr0 vid ${{MGMT_VLAN}} self" /etc/network/interfaces
     ifreload -a || true
 fi
 
-echo "==> Configuring management VLAN (${{TRUNK_IF}}.${{MGMT_VLAN}})"
+echo "==> Configuring management VLAN (vmbr0.${{MGMT_VLAN}})"
 cat >> /etc/network/interfaces <<IFACES
 
-auto ${{TRUNK_IF}}.${{MGMT_VLAN}}
-iface ${{TRUNK_IF}}.${{MGMT_VLAN}} inet static
+auto vmbr0.${{MGMT_VLAN}}
+iface vmbr0.${{MGMT_VLAN}} inet static
     address ${{MGMT_IP}}/${{MGMT_PREFIX}}
     mtu ${{TRUNK_MTU}}
     gateway ${{MGMT_GATEWAY}}
@@ -323,7 +333,7 @@ IFACES
 # Writing to /etc/network/interfaces alone doesn't bring the interface
 # up -- confirmed live (it silently sat absent from `ip a` until this
 # was added).
-ifup "${{TRUNK_IF}}.${{MGMT_VLAN}}" || true
+ifup "vmbr0.${{MGMT_VLAN}}" || true
 
 # Confirmed live: the installer-time DHCP resolver (on the temporary
 # vmbr0 install network) is stale and unreachable once the mgmt VLAN
@@ -335,16 +345,16 @@ search fleet.local
 nameserver ${{MGMT_GATEWAY}}
 RESOLV
 
-echo "==> Configuring underlay VLAN (${{TRUNK_IF}}.${{UNDERLAY_VLAN}})"
+echo "==> Configuring underlay VLAN (vmbr0.${{UNDERLAY_VLAN}})"
 cat >> /etc/network/interfaces <<IFACES
 
-auto ${{TRUNK_IF}}.${{UNDERLAY_VLAN}}
-iface ${{TRUNK_IF}}.${{UNDERLAY_VLAN}} inet static
+auto vmbr0.${{UNDERLAY_VLAN}}
+iface vmbr0.${{UNDERLAY_VLAN}} inet static
     address ${{UNDERLAY_IP}}/${{UNDERLAY_PREFIX}}
     mtu ${{TRUNK_MTU}}
 IFACES
 
-ifup "${{TRUNK_IF}}.${{UNDERLAY_VLAN}}" || true
+ifup "vmbr0.${{UNDERLAY_VLAN}}" || true
 
 # NOTE: no loopback (VTEP source / stable router-id) is configured for
 # this host, unlike VyOS's own build -- FRR falls back to the highest
@@ -446,9 +456,9 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
         --filename "crowcloud-seed-base.qcow2"
 
     echo "==> Creating seed VM ${{SEED_VMID}} from that image (guest, not the bare host OS)"
-    # Tagged onto MGMT_VLAN explicitly -- vmbr0 carries the trunk
-    # untagged/native, and the host's own mgmt access is a tagged VLAN
-    # subinterface on top of it (see ${{TRUNK_IF}}.${{MGMT_VLAN}} above), so
+    # Tagged onto MGMT_VLAN explicitly -- vmbr0 is VLAN-aware but
+    # untagged/native by default for any port that isn't given a `tag=`,
+    # and the host's own mgmt access is vmbr0.${{MGMT_VLAN}} (see above), so
     # a guest NIC on vmbr0 with no tag lands on the wrong L2 segment
     # entirely -- it would never have reached MGMT_GATEWAY regardless of
     # what IP it was given.
@@ -764,7 +774,7 @@ mod tests {
         // doesn't bring the interface up -- it silently stayed absent
         // from `ip a` until an explicit ifup was added here.
         let out = render_post_install_hook(&cfg());
-        assert!(out.contains("ifup \"${TRUNK_IF}.${MGMT_VLAN}\""));
+        assert!(out.contains("ifup \"vmbr0.${MGMT_VLAN}\""));
     }
 
     #[test]
@@ -776,9 +786,9 @@ mod tests {
         // adjacency or accept a BGP session from VyOS's listen range
         // bound to that subnet.
         let out = render_post_install_hook(&cfg());
-        assert!(out.contains("auto ${TRUNK_IF}.${UNDERLAY_VLAN}"));
+        assert!(out.contains("auto vmbr0.${UNDERLAY_VLAN}"));
         assert!(out.contains("address ${UNDERLAY_IP}/${UNDERLAY_PREFIX}"));
-        assert!(out.contains("ifup \"${TRUNK_IF}.${UNDERLAY_VLAN}\""));
+        assert!(out.contains("ifup \"vmbr0.${UNDERLAY_VLAN}\""));
         assert!(out.contains("10.255.10.11"));
     }
 
@@ -793,7 +803,7 @@ mod tests {
             .find("ip link set dev \"${TRUNK_IF}\" mtu \"${TRUNK_MTU}\"")
             .expect("trunk MTU must be set explicitly");
         let vlan_child_pos = out
-            .find("auto ${TRUNK_IF}.${MGMT_VLAN}")
+            .find("auto vmbr0.${MGMT_VLAN}")
             .expect("mgmt VLAN child must be created");
         assert!(
             mtu_pos < vlan_child_pos,
@@ -818,7 +828,7 @@ mod tests {
             .find("sed -i \"/^iface ${TRUNK_IF} /a")
             .expect("trunk MTU must be persisted into /etc/network/interfaces");
         let vlan_child_pos = out
-            .find("auto ${TRUNK_IF}.${MGMT_VLAN}")
+            .find("auto vmbr0.${MGMT_VLAN}")
             .expect("mgmt VLAN child must be created");
         assert!(
             persist_pos < vlan_child_pos,
@@ -837,7 +847,7 @@ mod tests {
         assert!(out.contains("cat > /etc/resolv.conf"));
         assert!(out.contains("nameserver ${MGMT_GATEWAY}"));
         let resolv_pos = out.find("cat > /etc/resolv.conf").unwrap();
-        let ifup_pos = out.find("ifup \"${TRUNK_IF}.${MGMT_VLAN}\"").unwrap();
+        let ifup_pos = out.find("ifup \"vmbr0.${MGMT_VLAN}\"").unwrap();
         assert!(
             ifup_pos < resolv_pos,
             "resolv.conf must be rewritten after the mgmt VLAN is up, not before"
@@ -893,6 +903,42 @@ mod tests {
             vlan_aware_pos < create_vm_pos,
             "vmbr0 must be made VLAN-aware before the seed VM's tagged NIC is created"
         );
+    }
+
+    #[test]
+    fn hook_grants_both_the_trunk_port_and_bridge_device_explicit_vlan_membership() {
+        // Confirmed live (the hard way): `bridge-vids` on the bridge's
+        // own stanza does not, by itself, grant the physical trunk port
+        // membership in those VLANs -- `bridge vlan show` kept reporting
+        // the trunk stuck at only its default PVID (1) no matter what
+        // else was configured. The bridge *device* itself separately
+        // needs explicit membership (the `self` keyword) before it can
+        // host any vmbr0.<vlan> subinterface at all, which is what the
+        // host's own underlay/mgmt IPs live on now.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("post-up bridge vlan add dev ${TRUNK_IF} vid ${UNDERLAY_VLAN}"));
+        assert!(out.contains("post-up bridge vlan add dev ${TRUNK_IF} vid ${MGMT_VLAN}"));
+        assert!(out.contains("post-up bridge vlan add dev vmbr0 vid ${UNDERLAY_VLAN} self"));
+        assert!(out.contains("post-up bridge vlan add dev vmbr0 vid ${MGMT_VLAN} self"));
+    }
+
+    #[test]
+    fn hook_puts_the_hosts_own_vlan_ips_on_the_bridge_not_the_raw_trunk() {
+        // Confirmed live: putting the host's own underlay/mgmt IPs on
+        // classic 8021q subinterfaces of the physical trunk itself
+        // (${TRUNK_IF}.${VLAN}), while *also* enslaving that same trunk
+        // to vmbr0 for the seed VM's tagged NIC, is two different VLAN
+        // mechanisms fighting over the same physical port -- starting
+        // the VM broke mgmt-VLAN connectivity for the whole host until
+        // a full reboot. Proxmox's own documented pattern is a single
+        // VLAN-aware bridge for everything, with the host's own VLAN
+        // IPs on vmbr0.<vlan> (a subinterface of the bridge), not the
+        // NIC.
+        let out = render_post_install_hook(&cfg());
+        assert!(!out.contains("auto ${TRUNK_IF}.${UNDERLAY_VLAN}"));
+        assert!(!out.contains("auto ${TRUNK_IF}.${MGMT_VLAN}"));
+        assert!(out.contains("auto vmbr0.${UNDERLAY_VLAN}"));
+        assert!(out.contains("auto vmbr0.${MGMT_VLAN}"));
     }
 
     #[test]
