@@ -125,7 +125,17 @@ if [ -n "$CROW_FLEET_SECRET" ]; then
     sleep 2
   done
   PG_POD="$(kubectl get pod -n "$NAMESPACE" -l "cnpg.io/cluster=${PG_CLUSTER},role=primary" -o jsonpath='{.items[0].metadata.name}')"
-  kubectl exec -n "$NAMESPACE" "$PG_POD" -- psql -U crowcloud -d crowcloud -c \
+  # Confirmed live: with no -h, psql defaults to CNPG's own internal
+  # instance-manager socket (/controller/run/.s.PGSQL.5432) rather than
+  # a normal Postgres listener -- that socket uses peer authentication,
+  # which compares the OS user running the client against the requested
+  # role name. `kubectl exec` runs as the container's default user, not
+  # `crowcloud`, so it always failed with "Peer authentication failed
+  # for user crowcloud". Forcing -h 127.0.0.1 hits the real Postgres TCP
+  # listener instead, authenticating with the actual app-user password
+  # from CNPG's own generated <cluster>-app secret.
+  PG_PASSWORD="$(kubectl get secret -n "$NAMESPACE" "${PG_CLUSTER}-app" -o jsonpath='{.data.password}' | base64 -d)"
+  kubectl exec -n "$NAMESPACE" "$PG_POD" -- env PGPASSWORD="$PG_PASSWORD" psql -h 127.0.0.1 -U crowcloud -d crowcloud -c \
     "INSERT INTO fleet_secrets (secret, label) VALUES ('${CROW_FLEET_SECRET}', 'seed-bootstrap') ON CONFLICT (secret) DO NOTHING;"
 fi
 
