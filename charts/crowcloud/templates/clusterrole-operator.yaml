@@ -17,11 +17,25 @@ rules:
     resources: ["namespaces"]
     verbs: ["get", "create"]
   # Full reconcile loop: watches, provisions/reconciles/deprovisions, and
-  # patches status on VirtualMachine CRs
-  # (crates/crow-operator/src/controllers/virtual_machine.rs).
+  # patches status on every CR kind this operator actually installs and
+  # reconciles (crates/crow-operator/src/main.rs::install_crds) --
+  # confirmed live: ipPool/ipClaim/privateSubnet/exposedEndpoint were all
+  # silently 403ing on their own initial list-watch (every one of those
+  # controllers was completely non-functional, not just slow) because
+  # only virtualmachines was ever granted here.
   - apiGroups: ["crow.cloud"]
-    resources: ["virtualmachines"]
+    resources:
+      - virtualmachines
+      - ippools
+      - ipclaims
+      - privatesubnets
+      - exposedendpoints
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["crow.cloud"]
-    resources: ["virtualmachines/status"]
+    resources:
+      - virtualmachines/status
+      - ippools/status
+      - ipclaims/status
+      - privatesubnets/status
+      - exposedendpoints/status
     verbs: ["get", "update", "patch"]
