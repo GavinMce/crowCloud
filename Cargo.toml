@@ -20,7 +20,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Gavin <gmcellistrem@gmail.com>"]
 license = "MIT"
@@ -28,14 +28,14 @@ license = "MIT"
 [workspace.dependencies]
 # internal crates (version required so `cargo package` can validate path deps;
 # release-plz keeps these in sync with workspace.package.version on release)
-crow-core = { path = "crates/crow-core", version = "0.1.1" }
-crow-db = { path = "crates/crow-db", version = "0.1.1" }
-crow-auth = { path = "crates/crow-auth", version = "0.1.1" }
-crow-vyos-ssh = { path = "crates/crow-vyos-ssh", version = "0.1.1" }
-crow-provider-proxmox = { path = "crates/providers/crow-provider-proxmox", version = "0.1.1" }
-crow-provider-registry = { path = "crates/providers/crow-provider-registry", version = "0.1.1" }
-crow-provider-vyos = { path = "crates/providers/crow-provider-vyos", version = "0.1.1" }
-crow-resource-vm = { path = "crates/resources/crow-resource-vm", version = "0.1.1" }
+crow-core = { path = "crates/crow-core", version = "0.1.2" }
+crow-db = { path = "crates/crow-db", version = "0.1.2" }
+crow-auth = { path = "crates/crow-auth", version = "0.1.2" }
+crow-vyos-ssh = { path = "crates/crow-vyos-ssh", version = "0.1.2" }
+crow-provider-proxmox = { path = "crates/providers/crow-provider-proxmox", version = "0.1.2" }
+crow-provider-registry = { path = "crates/providers/crow-provider-registry", version = "0.1.2" }
+crow-provider-vyos = { path = "crates/providers/crow-provider-vyos", version = "0.1.2" }
+crow-resource-vm = { path = "crates/resources/crow-resource-vm", version = "0.1.2" }
 
 # async
 tokio = { version = "1", features = ["full"] }
