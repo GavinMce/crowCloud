@@ -45,6 +45,11 @@ PROXMOX_HOST_TOKEN_SECRET="${PROXMOX_HOST_TOKEN_SECRET:-}"
 PROXMOX_HOST_MGMT_IP="${PROXMOX_HOST_MGMT_IP:-}"
 PROXMOX_HOST_URL="${PROXMOX_HOST_URL:-}"
 PROXMOX_HOST_TOKEN_ID="${PROXMOX_HOST_TOKEN_ID:-}"
+# Fleet-wide BGP facts (not per-node like the vars above) -- needed so
+# crowCloud can create Proxmox SDN's one-time EVPN controller pointed at
+# VyOS (see crow-provider-proxmox::network) alongside the provider itself.
+PROXMOX_HOST_BGP_ASN="${PROXMOX_HOST_BGP_ASN:-}"
+PROXMOX_HOST_BGP_ROUTE_REFLECTOR_IP="${PROXMOX_HOST_BGP_ROUTE_REFLECTOR_IP:-}"
 
 NAMESPACE=crow-system
 # Only used for the local-checkout preference below, not for fetching
@@ -190,7 +195,7 @@ if [ -n "$PROXMOX_HOST_MAC" ]; then
   # post-install hook, with no proxmox_* fields since a provider already
   # exists by then). See host_bootstrap.rs's own [] branch.
   PROVIDER_REGISTER_PAYLOAD=$(cat <<JSON
-{"mac_address":"${PROXMOX_HOST_MAC}","node_name":"${PROXMOX_HOST_NODE_NAME}","default_storage":"${PROXMOX_HOST_STORAGE}","default_bridge":"${PROXMOX_HOST_BRIDGE}","management_ip":"${PROXMOX_HOST_MGMT_IP}","proxmox_url":"${PROXMOX_HOST_URL}","proxmox_token_id":"${PROXMOX_HOST_TOKEN_ID}","proxmox_token_secret":"${PROXMOX_HOST_TOKEN_SECRET}"}
+{"mac_address":"${PROXMOX_HOST_MAC}","node_name":"${PROXMOX_HOST_NODE_NAME}","default_storage":"${PROXMOX_HOST_STORAGE}","default_bridge":"${PROXMOX_HOST_BRIDGE}","management_ip":"${PROXMOX_HOST_MGMT_IP}","proxmox_url":"${PROXMOX_HOST_URL}","proxmox_token_id":"${PROXMOX_HOST_TOKEN_ID}","proxmox_token_secret":"${PROXMOX_HOST_TOKEN_SECRET}","bgp_asn":${PROXMOX_HOST_BGP_ASN},"bgp_route_reflector_ip":"${PROXMOX_HOST_BGP_ROUTE_REFLECTOR_IP}"}
 JSON
 )
   set +e

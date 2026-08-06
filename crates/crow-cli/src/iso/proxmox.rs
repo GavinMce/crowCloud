@@ -58,7 +58,6 @@ pub struct ProxmoxBuildConfig {
     pub crow_api_url: String,
     pub fleet_secret: String,
     pub bgp_asn: u32,
-    pub bgp_peer_password: String,
     /// VyOS's own IP on the underlay VLAN -- see `FabricConfig`'s field
     /// of the same name for why this host must actively dial out to it
     /// rather than relying on VyOS's passive `bgp listen range` alone.
@@ -176,6 +175,8 @@ pub fn render_seed_cloud_init(
     mgmt_gateway: &str,
     vyos: Option<(&str, &str)>,
     proxmox_mgmt_ip: &str,
+    bgp_asn: u32,
+    bgp_route_reflector_ip: &str,
 ) -> String {
     let ssh_authorized_keys = match ssh_pubkey {
         Some(key) => format!("ssh_authorized_keys:\n  - {key}\n"),
@@ -193,9 +194,13 @@ pub fn render_seed_cloud_init(
     // actually detected/generated them there. The URL and token *name*
     // aren't install-time-dynamic (the URL is built from a value this
     // build already has; the name is fixed, see `PROXMOX_TOKEN_NAME`),
-    // so those are resolved directly, here.
+    // so those are resolved directly, here -- same for `bgp_asn`/
+    // `bgp_route_reflector_ip`, needed so `bootstrap.sh` can create
+    // Proxmox SDN's one-time EVPN controller (pointed at VyOS) alongside
+    // the provider itself; both are fleet-wide facts already known at
+    // this crate's build time, not per-node like the placeholders above.
     let provider_env = format!(
-        " PROXMOX_HOST_MAC=__CROW_PROXMOX_MAC__ PROXMOX_HOST_NODE_NAME=__CROW_PROXMOX_NODE_NAME__ PROXMOX_HOST_STORAGE=__CROW_PROXMOX_STORAGE__ PROXMOX_HOST_BRIDGE=__CROW_PROXMOX_BRIDGE__ PROXMOX_HOST_TOKEN_SECRET=__CROW_PROXMOX_TOKEN_SECRET__ PROXMOX_HOST_MGMT_IP={proxmox_mgmt_ip} PROXMOX_HOST_URL=https://{proxmox_mgmt_ip}:8006 PROXMOX_HOST_TOKEN_ID=root@pam!{PROXMOX_TOKEN_NAME}"
+        " PROXMOX_HOST_MAC=__CROW_PROXMOX_MAC__ PROXMOX_HOST_NODE_NAME=__CROW_PROXMOX_NODE_NAME__ PROXMOX_HOST_STORAGE=__CROW_PROXMOX_STORAGE__ PROXMOX_HOST_BRIDGE=__CROW_PROXMOX_BRIDGE__ PROXMOX_HOST_TOKEN_SECRET=__CROW_PROXMOX_TOKEN_SECRET__ PROXMOX_HOST_MGMT_IP={proxmox_mgmt_ip} PROXMOX_HOST_URL=https://{proxmox_mgmt_ip}:8006 PROXMOX_HOST_TOKEN_ID=root@pam!{PROXMOX_TOKEN_NAME} PROXMOX_HOST_BGP_ASN={bgp_asn} PROXMOX_HOST_BGP_ROUTE_REFLECTOR_IP={bgp_route_reflector_ip}"
     );
 
     // `vyos` is `Some((uplink_interface, ssh_private_key))` -- both
@@ -330,6 +335,8 @@ pub fn render_post_install_hook(cfg: &ProxmoxBuildConfig) -> String {
         &cfg.mgmt_gateway,
         vyos,
         &cfg.mgmt_ip,
+        cfg.bgp_asn,
+        &cfg.bgp_route_reflector_ip,
     );
     format!(
         r#"#!/usr/bin/env bash
@@ -347,7 +354,6 @@ TRUNK_MTU="{trunk_mtu}"
 CROW_API_URL="{crow_api_url}"
 FLEET_SECRET="{fleet_secret}"
 BGP_ASN="{bgp_asn}"
-BGP_PEER_PASSWORD="{bgp_peer_password}"
 BGP_ROUTE_REFLECTOR_IP="{bgp_route_reflector_ip}"
 UNDERLAY_PREFIX="{underlay_prefix}"
 OSPF_AREA="{ospf_area}"
@@ -439,18 +445,14 @@ IFACES
 
 ifup "vmbr0.${{UNDERLAY_VLAN}}" || true
 
-# NOTE: no loopback (VTEP source / stable router-id) is configured for
-# this host, unlike VyOS's own build -- FRR falls back to the highest
-# active interface address for its router-id absent one, which works
-# for basic OSPF/BGP adjacency but isn't stable across interface
-# changes. `PrivateSubnet`'s VXLAN/EVPN dataplane
-# (`crow-provider-proxmox::network::create_network`) uses this host's
-# underlay VLAN IP as its VTEP source instead of a dedicated loopback --
-# a real loopback would be more robust (survives this specific
-# interface flapping) but isn't required to get EVPN working, so it's
-# left as a gap for later.
-
-echo "==> Configuring FRR (OSPF underlay + BGP EVPN dynamic peer)"
+# NOTE: no loopback (stable router-id) is configured for this host,
+# unlike VyOS's own build -- FRR falls back to the highest active
+# interface address for its router-id absent one, which works for basic
+# OSPF adjacency but isn't stable across interface changes. Left as a
+# gap: a real loopback + router-id is a separate change from anything
+# EVPN-related, since VTEP source addressing is entirely Proxmox SDN's
+# own concern now (see below), not something this hook configures.
+echo "==> Configuring FRR (OSPF underlay)"
 # Confirmed live: an earlier version of this hook assumed a per-app
 # config-drop-in directory that doesn't exist in real FRR packaging --
 # the actual model is /etc/frr/daemons (which daemons start) plus a
@@ -458,29 +460,32 @@ echo "==> Configuring FRR (OSPF underlay + BGP EVPN dynamic peer)"
 # packaged default of `service integrated-vtysh-config` in
 # /etc/frr/vtysh.conf, which this doesn't verify or set explicitly.
 #
-# `advertise-all-vni`: zebra auto-discovers any local VXLAN netdevice
-# enslaved to a bridge (see `create_network` in crow-provider-proxmox)
-# and, with this set, advertises EVPN Type-3 routes for it over the
-# FABRIC peering above -- no explicit per-VNI mapping config needed.
-# Without it, this node's own VXLAN interfaces exist locally but are
-# never announced, so no other node ever learns to send them traffic.
+# `bgpd` is enabled here even though nothing in this hook ever writes a
+# `router bgp` stanza -- BGP EVPN peering (toward VyOS as
+# route-reflector) is entirely Proxmox SDN's own concern, created lazily
+# by crow-provider-proxmox::network on this host's first PrivateSubnet,
+# not something this hook hand-rolls. bgpd sitting enabled with no BGP
+# config is a normal, harmless FRR state; leaving it *disabled* here
+# would risk SDN's later config never actually taking effect if its own
+# reload doesn't independently ensure the daemon is enabled too
+# (unverified either way -- enabling it here removes the risk).
 sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
 sed -i 's/^bgpd=no/bgpd=yes/' /etc/frr/daemons
-cat > /etc/frr/frr.conf <<FRRCONF
-router ospf
+OSPF_CONFIG="router ospf
  network 0.0.0.0/0 area ${{OSPF_AREA}}
 !
-router bgp ${{BGP_ASN}}
- neighbor FABRIC peer-group
- neighbor FABRIC remote-as internal
- neighbor FABRIC password ${{BGP_PEER_PASSWORD}}
- neighbor ${{BGP_ROUTE_REFLECTOR_IP}} peer-group FABRIC
- address-family l2vpn evpn
-  neighbor FABRIC activate
-  advertise-all-vni
- exit-address-family
-!
-FRRCONF
+"
+# Written to both files: /etc/frr/frr.conf so OSPF underlay routing
+# works immediately at first boot, independent of whether/when this host
+# ever creates a PrivateSubnet; /etc/frr/frr.conf.local so the same
+# content survives once it does. Proxmox SDN's EVPN controller
+# regenerates /etc/frr/frr.conf from scratch on its own first reload
+# (triggered by the first PrivateSubnet), but merges frr.conf.local back
+# in -- confirmed against PVE::Network::SDN::Frr::append_local_config.
+# Without also living in frr.conf.local, this OSPF config would silently
+# vanish the moment SDN first runs.
+echo "${{OSPF_CONFIG}}" > /etc/frr/frr.conf
+echo "${{OSPF_CONFIG}}" > /etc/frr/frr.conf.local
 systemctl restart frr
 
 echo "==> Detecting local Proxmox defaults"
@@ -499,7 +504,7 @@ MAC_ADDRESS="$(cat /sys/class/net/${{TRUNK_IF}}/address)"
 echo "==> Attempting self-registration with crowCloud at ${{CROW_API_URL}}"
 REGISTER_URL="${{CROW_API_URL%/}}/api/v1/internal/hosts/register"
 REGISTER_PAYLOAD=$(cat <<JSON
-{{"mac_address":"${{MAC_ADDRESS}}","node_name":"${{NODE_NAME}}","default_storage":"${{DEFAULT_STORAGE}}","default_bridge":"${{DEFAULT_BRIDGE}}","management_ip":"${{MGMT_IP}}","underlay_ip":"${{UNDERLAY_IP}}"}}
+{{"mac_address":"${{MAC_ADDRESS}}","node_name":"${{NODE_NAME}}","default_storage":"${{DEFAULT_STORAGE}}","default_bridge":"${{DEFAULT_BRIDGE}}","management_ip":"${{MGMT_IP}}"}}
 JSON
 )
 
@@ -688,7 +693,6 @@ fi
         crow_api_url = cfg.crow_api_url,
         fleet_secret = cfg.fleet_secret,
         bgp_asn = cfg.bgp_asn,
-        bgp_peer_password = cfg.bgp_peer_password,
         bgp_route_reflector_ip = cfg.bgp_route_reflector_ip,
         underlay_prefix = cfg.underlay_prefix,
         ospf_area = cfg.ospf_area,
@@ -720,7 +724,6 @@ mod tests {
             crow_api_url: "https://crowcloud.fleet.local".into(),
             fleet_secret: "fleet-secret-abc".into(),
             bgp_asn: 65000,
-            bgp_peer_password: "fabric-secret".into(),
             bgp_route_reflector_ip: "10.255.10.1".into(),
             underlay_prefix: 24,
             ospf_area: "0".into(),
@@ -863,42 +866,37 @@ mod tests {
         assert!(!out.contains("daemons.conf.d"));
         assert!(out.contains("sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons"));
         assert!(out.contains("sed -i 's/^bgpd=no/bgpd=yes/' /etc/frr/daemons"));
-        assert!(out.contains("cat > /etc/frr/frr.conf"));
+        assert!(out.contains("> /etc/frr/frr.conf"));
         assert!(out.contains("systemctl restart frr"));
     }
 
     #[test]
-    fn hook_advertises_all_vnis_so_local_vxlan_interfaces_are_actually_announced() {
-        // Without this, zebra auto-discovers local VXLAN netdevices (see
-        // create_network in crow-provider-proxmox) but never announces
-        // them over the existing FABRIC EVPN peering -- other nodes
-        // would never learn to send them traffic.
+    fn hook_writes_ospf_config_to_both_frr_conf_and_frr_conf_local() {
+        // Proxmox SDN's EVPN controller (created lazily by
+        // crow-provider-proxmox::network on this host's first
+        // PrivateSubnet) regenerates /etc/frr/frr.conf from scratch on
+        // its own first reload -- confirmed against
+        // PVE::Network::SDN::Frr::append_local_config, it merges
+        // /etc/frr/frr.conf.local back in, but nothing else. Without the
+        // same OSPF content also living in frr.conf.local, it would
+        // silently vanish the moment SDN first runs.
         let out = render_post_install_hook(&cfg());
-        assert!(out.contains("neighbor FABRIC activate"));
-        assert!(out.contains("advertise-all-vni"));
+        assert!(out.contains(r#"echo "${OSPF_CONFIG}" > /etc/frr/frr.conf"#));
+        assert!(out.contains(r#"echo "${OSPF_CONFIG}" > /etc/frr/frr.conf.local"#));
+        assert!(out.contains("router ospf"));
     }
 
     #[test]
-    fn hook_sets_the_bgp_peer_password_matching_vyos() {
+    fn hook_no_longer_hand_rolls_bgp_evpn_peering() {
+        // BGP EVPN peering toward VyOS is entirely Proxmox SDN's own
+        // concern now (crow-provider-proxmox::network creates its EVPN
+        // controller lazily) -- this hook hand-rolling a competing
+        // `router bgp` stanza would fight with whatever SDN later
+        // generates into the same file.
         let out = render_post_install_hook(&cfg());
-        // The FRR config line is a heredoc rendered with the *shell*
-        // variable, not the literal secret baked in twice -- deferred to
-        // runtime same as everything else read from BGP_PEER_PASSWORD.
-        assert!(out.contains(r#"BGP_PEER_PASSWORD="fabric-secret""#));
-        assert!(out.contains("neighbor FABRIC password ${BGP_PEER_PASSWORD}"));
-    }
-
-    #[test]
-    fn hook_actively_peers_with_vyos_instead_of_leaving_the_peer_group_unbound() {
-        // Confirmed live: VyOS's own `bgp listen range` is passive-only
-        // (accepts incoming connections, never dials out). A `FABRIC`
-        // peer-group template alone -- remote-as/password/activate, but
-        // never bound to an actual neighbor address -- never originates
-        // a connection either, so with both sides passive, no BGP
-        // session forms despite OSPF working fine over the same subnet.
-        let out = render_post_install_hook(&cfg());
-        assert!(out.contains("BGP_ROUTE_REFLECTOR_IP=\"10.255.10.1\""));
-        assert!(out.contains("neighbor ${BGP_ROUTE_REFLECTOR_IP} peer-group FABRIC"));
+        assert!(!out.contains("router bgp ${BGP_ASN}"));
+        assert!(!out.contains("neighbor FABRIC"));
+        assert!(!out.contains("advertise-all-vni"));
     }
 
     #[test]
@@ -1187,9 +1185,31 @@ mod tests {
             "10.20.0.1",
             None,
             "10.20.0.11",
+            65000,
+            "10.255.10.1",
         );
         assert!(out.contains("CROW_FLEET_SECRET=literal-secret-value"));
         assert!(!out.contains("${FLEET_SECRET}"));
+    }
+
+    #[test]
+    fn seed_cloud_init_carries_fleet_wide_bgp_facts_for_the_seeds_own_registration() {
+        // bootstrap.sh's own provider self-registration call (see
+        // `deploy/bootstrap.sh`) needs these to create Proxmox SDN's
+        // one-time EVPN controller pointed at VyOS -- they're fleet-wide
+        // facts already known at this crate's build time, not per-node
+        // like the __CROW_PROXMOX_*__ placeholders.
+        let out = render_seed_cloud_init(
+            "x",
+            None,
+            "10.20.0.1",
+            None,
+            "10.20.0.11",
+            65000,
+            "10.255.10.1",
+        );
+        assert!(out.contains("PROXMOX_HOST_BGP_ASN=65000"));
+        assert!(out.contains("PROXMOX_HOST_BGP_ROUTE_REFLECTOR_IP=10.255.10.1"));
     }
 
     #[test]
@@ -1198,7 +1218,15 @@ mod tests {
         // login and no key of its own -- omitting this leaves the seed
         // VM entirely console/SSH-inaccessible, same as before this
         // existed, rather than silently defaulting to something.
-        let out = render_seed_cloud_init("x", None, "10.20.0.1", None, "10.20.0.11");
+        let out = render_seed_cloud_init(
+            "x",
+            None,
+            "10.20.0.1",
+            None,
+            "10.20.0.11",
+            65000,
+            "10.255.10.1",
+        );
         assert!(!out.contains("ssh_authorized_keys"));
     }
 
@@ -1215,6 +1243,8 @@ mod tests {
             "10.20.0.1",
             None,
             "10.20.0.11",
+            65000,
+            "10.255.10.1",
         );
         assert!(out.starts_with(
             "#cloud-config\nssh_authorized_keys:\n  - ssh-ed25519 AAAA... test-key\n"
@@ -1225,7 +1255,15 @@ mod tests {
 
     #[test]
     fn seed_cloud_init_embeds_the_real_bootstrap_sh_not_a_placeholder() {
-        let out = render_seed_cloud_init("x", None, "10.20.0.1", None, "10.20.0.11");
+        let out = render_seed_cloud_init(
+            "x",
+            None,
+            "10.20.0.1",
+            None,
+            "10.20.0.11",
+            65000,
+            "10.255.10.1",
+        );
         assert!(out.contains("Day-0 bootstrap"));
         assert!(out.contains("Installing K3s"));
     }
@@ -1241,7 +1279,15 @@ mod tests {
         // registry as the Docker images via the release pipeline, so
         // the embedded seed-VM bootstrap should pull it from there
         // instead of cloning source.
-        let out = render_seed_cloud_init("x", None, "10.20.0.1", None, "10.20.0.11");
+        let out = render_seed_cloud_init(
+            "x",
+            None,
+            "10.20.0.1",
+            None,
+            "10.20.0.11",
+            65000,
+            "10.255.10.1",
+        );
         assert!(out.contains("oci://ghcr.io/gavinmce/charts/crowcloud"));
         assert!(!out.contains("git clone --depth 1"));
         assert!(!out.contains("github.com/GavinMce/crowCloud.git"));

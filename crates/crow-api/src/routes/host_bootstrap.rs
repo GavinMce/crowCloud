@@ -21,11 +21,6 @@ struct RegisterRequest {
     default_storage: String,
     default_bridge: String,
     management_ip: String,
-    /// This node's own IP on the underlay VLAN -- every fabric host has
-    /// one (unlike the seed-only `proxmox_*` fields below), used as the
-    /// VTEP source address for `PrivateSubnet`'s VXLAN/EVPN dataplane
-    /// (`crow-provider-proxmox::network::create_network`).
-    underlay_ip: String,
     /// Only consulted when no Proxmox provider exists yet (the seed
     /// host's own bootstrap, calling back in after standing crowCloud up
     /// on itself) -- lets it become the fleet's first provider
@@ -36,6 +31,14 @@ struct RegisterRequest {
     proxmox_url: Option<String>,
     proxmox_token_id: Option<String>,
     proxmox_token_secret: Option<String>,
+    /// Fleet-wide BGP facts needed for `PrivateSubnet`'s VXLAN/EVPN
+    /// dataplane -- specifically, to create the one-time Proxmox SDN EVPN
+    /// controller pointed at VyOS (`crow-provider-proxmox::network`).
+    /// Provider-wide, not per-node (unlike e.g. `management_ip`), so
+    /// these only matter -- and are only consulted -- alongside the
+    /// other `proxmox_*` fields above, on first-provider creation.
+    bgp_asn: Option<u32>,
+    bgp_route_reflector_ip: Option<String>,
 }
 
 /// Tells the post-install hook (#66/#67) what to do with `pvecm` --
@@ -133,6 +136,8 @@ async fn register(
                     "node": req.node_name,
                     "default_storage": req.default_storage,
                     "default_bridge": req.default_bridge,
+                    "bgp_asn": req.bgp_asn,
+                    "bgp_route_reflector_ip": req.bgp_route_reflector_ip,
                 });
                 build_infra_provider("proxmox", &config)?;
                 let name = format!("proxmox-{}", req.node_name);
@@ -167,13 +172,12 @@ async fn register(
     .map_err(|e| ApiError::Internal(e.into()))?;
 
     sqlx::query(
-        "INSERT INTO provider_nodes (provider_id, node_name, default_storage, default_bridge, management_ip, underlay_ip)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO provider_nodes (provider_id, node_name, default_storage, default_bridge, management_ip)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (provider_id, node_name)
          DO UPDATE SET default_storage = EXCLUDED.default_storage,
                         default_bridge = EXCLUDED.default_bridge,
                         management_ip = EXCLUDED.management_ip,
-                        underlay_ip = EXCLUDED.underlay_ip,
                         updated_at = NOW()",
     )
     .bind(provider_id)
@@ -181,7 +185,6 @@ async fn register(
     .bind(&req.default_storage)
     .bind(&req.default_bridge)
     .bind(&req.management_ip)
-    .bind(&req.underlay_ip)
     .execute(&state.db)
     .await
     .map_err(|e| ApiError::Internal(e.into()))?;

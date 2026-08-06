@@ -17,11 +17,13 @@ pub struct ProxmoxProvider {
     client: ProxmoxClient,
     default_storage: String,
     default_bridge: String,
-    /// This node's own underlay-VLAN IP -- used as the VXLAN VTEP source
-    /// for `create_network` (see `network.rs`). `None` for a node that
-    /// hasn't (re-)registered since migration 008 added it; `create_network`
-    /// errors clearly rather than building a VTEP with no source address.
-    underlay_ip: Option<String>,
+    /// Fleet-wide BGP facts (not per-node) -- needed to create Proxmox
+    /// SDN's one-time EVPN controller pointed at VyOS as route-reflector
+    /// (see `network.rs`). `None` for a provider that hasn't set them;
+    /// `create_network` errors clearly rather than silently building a
+    /// controller with no peer to reach.
+    bgp_asn: Option<u32>,
+    bgp_route_reflector_ip: Option<String>,
 }
 
 /// Grouped rather than eight positional args on `ProxmoxProvider::new`
@@ -34,7 +36,8 @@ pub struct ProxmoxProviderConfig<'a> {
     pub node: &'a str,
     pub default_storage: &'a str,
     pub default_bridge: &'a str,
-    pub underlay_ip: Option<&'a str>,
+    pub bgp_asn: Option<u32>,
+    pub bgp_route_reflector_ip: Option<&'a str>,
     pub tls_insecure: bool,
 }
 
@@ -52,7 +55,8 @@ impl ProxmoxProvider {
             client,
             default_storage: cfg.default_storage.to_string(),
             default_bridge: cfg.default_bridge.to_string(),
-            underlay_ip: cfg.underlay_ip.map(str::to_string),
+            bgp_asn: cfg.bgp_asn,
+            bgp_route_reflector_ip: cfg.bgp_route_reflector_ip.map(str::to_string),
         })
     }
 
@@ -117,9 +121,14 @@ impl InfraProvider for ProxmoxProvider {
     }
 
     async fn create_network(&self, spec: NetworkSpec) -> Result<NetworkHandle, ProviderError> {
-        network::create_network(&self.client, self.underlay_ip.as_deref(), &spec)
-            .await
-            .map_err(Into::into)
+        network::create_network(
+            &self.client,
+            self.bgp_asn,
+            self.bgp_route_reflector_ip.as_deref(),
+            &spec,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     async fn delete_network(&self, handle: &NetworkHandle) -> Result<(), ProviderError> {

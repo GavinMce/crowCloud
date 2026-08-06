@@ -314,7 +314,7 @@ mod tests {
                 underlay_network_prefix: 24,
                 ssh_pubkey: "ssh-ed25519 AAAAtest".into(),
                 bgp_asn: 65000,
-                bgp_peer_password: "fabric-secret".into(),
+                bgp_peer_password: Some("fabric-secret".into()),
                 dns_servers: vec!["8.8.8.8".into(), "8.8.4.4".into()],
                 allow_password_auth: false,
                 crow_api_mgmt_ip: None,
