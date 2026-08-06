@@ -7,6 +7,17 @@ api:
   replicas: 1
   port: 8080
   logLevel: info
+  service:
+    # ClusterIP is fine for browser users -- the frontend's nginx proxies
+    # /api/ to this Service internally (docker/nginx-frontend.conf.template),
+    # so the browser only ever talks to the frontend's own origin. `crow`
+    # CLI users bypass the frontend entirely and need to reach this
+    # directly though -- crates/crow-cli/deploy/bootstrap.sh sets this to
+    # NodePort so its own printed `crow login --server http://<node-ip>:8080`
+    # instructions actually work. Leave as ClusterIP if you're fronting
+    # this with your own Ingress/gateway instead.
+    type: ClusterIP
+    nodePort: 30081
   env:
     # Required. e.g. --set api.env.JWT_SECRET=$(openssl rand -hex 32)
     # Templated into a Secret (templates/secret.yaml), never left as a

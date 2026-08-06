@@ -1,6 +1,9 @@
 use axum::{http::HeaderMap, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::types::Uuid;
+
+use crow_provider_registry::build_infra_provider;
 
 use crate::{
     error::{ApiError, ApiResult},
@@ -18,6 +21,16 @@ struct RegisterRequest {
     default_storage: String,
     default_bridge: String,
     management_ip: String,
+    /// Only consulted when no Proxmox provider exists yet (the seed
+    /// host's own bootstrap, calling back in after standing crowCloud up
+    /// on itself) -- lets it become the fleet's first provider
+    /// automatically instead of that being a manual `crow provider
+    /// add-proxmox` step after the fact. Ignored (a provider already
+    /// exists) for every other host self-registering as an additional
+    /// node.
+    proxmox_url: Option<String>,
+    proxmox_token_id: Option<String>,
+    proxmox_token_secret: Option<String>,
 }
 
 /// Tells the post-install hook (#66/#67) what to do with `pvecm` --
@@ -94,9 +107,40 @@ async fn register(
         match provider_ids.as_slice() {
             [id] => *id,
             [] => {
-                return Err(ApiError::Conflict(
-                    "no Proxmox provider exists yet to register against".to_string(),
-                ))
+                // The seed host's own bootstrap calling back in after
+                // standing crowCloud up on itself -- becomes the
+                // fleet's first provider automatically if it brought
+                // credentials for itself, same shape `providers::create`
+                // builds and validates.
+                let (Some(url), Some(token_id), Some(token_secret)) = (
+                    &req.proxmox_url,
+                    &req.proxmox_token_id,
+                    &req.proxmox_token_secret,
+                ) else {
+                    return Err(ApiError::Conflict(
+                        "no Proxmox provider exists yet to register against".to_string(),
+                    ));
+                };
+                let config = json!({
+                    "url": url,
+                    "token_id": token_id,
+                    "token_secret": token_secret,
+                    "node": req.node_name,
+                    "default_storage": req.default_storage,
+                    "default_bridge": req.default_bridge,
+                });
+                build_infra_provider("proxmox", &config)?;
+                let name = format!("proxmox-{}", req.node_name);
+                sqlx::query_scalar::<_, Uuid>(
+                    "INSERT INTO providers (name, provider_type, config)
+                     VALUES ($1, 'proxmox', $2)
+                     RETURNING id",
+                )
+                .bind(&name)
+                .bind(&config)
+                .fetch_one(&state.db)
+                .await
+                .map_err(|e| ApiError::Internal(e.into()))?
             }
             _ => return Err(ApiError::Conflict(
                 "multiple Proxmox providers exist; automatic fleet registration needs exactly one"

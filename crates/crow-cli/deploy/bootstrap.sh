@@ -22,6 +22,29 @@ CROW_DOMAIN="${CROW_DOMAIN:-}"
 # crowCloud is up, so hosts self-registering with this secret (#66/#67)
 # work immediately with no manual "create a fleet secret" step.
 CROW_FLEET_SECRET="${CROW_FLEET_SECRET:-}"
+# Optional, set together by `crow-cli iso proxmox build`'s
+# --vyos-uplink-interface/--vyos-ssh-private-key: lets the operator's
+# ExposedEndpoint controller configure itself against VyOS automatically
+# instead of that being a manual `helm upgrade --set operator.vyos.*`
+# step after the fact (confirmed live: every fresh deployment otherwise
+# starts with that controller silently disabled).
+VYOS_HOST="${VYOS_HOST:-}"
+VYOS_UPLINK_INTERFACE="${VYOS_UPLINK_INTERFACE:-}"
+VYOS_SSH_KEY_PATH="${VYOS_SSH_KEY_PATH:-}"
+# Optional, set by the seed VM's own cloud-init (crow-cli iso proxmox
+# build's post-install hook, when it self-elects as the fleet seed):
+# the physical Proxmox host's own identity and a freshly-generated API
+# token for it, so this seed can register that host as crowCloud's
+# first provider automatically instead of a manual `crow provider
+# add-proxmox` step after the fact.
+PROXMOX_HOST_MAC="${PROXMOX_HOST_MAC:-}"
+PROXMOX_HOST_NODE_NAME="${PROXMOX_HOST_NODE_NAME:-}"
+PROXMOX_HOST_STORAGE="${PROXMOX_HOST_STORAGE:-}"
+PROXMOX_HOST_BRIDGE="${PROXMOX_HOST_BRIDGE:-}"
+PROXMOX_HOST_TOKEN_SECRET="${PROXMOX_HOST_TOKEN_SECRET:-}"
+PROXMOX_HOST_MGMT_IP="${PROXMOX_HOST_MGMT_IP:-}"
+PROXMOX_HOST_URL="${PROXMOX_HOST_URL:-}"
+PROXMOX_HOST_TOKEN_ID="${PROXMOX_HOST_TOKEN_ID:-}"
 
 NAMESPACE=crow-system
 # Only used for the local-checkout preference below, not for fetching
@@ -111,7 +134,26 @@ if [ -n "$CROW_DOMAIN" ]; then
 else
   HELM_ARGS+=(--set frontend.service.type=NodePort)
 fi
+# Confirmed live: the API Service defaults to ClusterIP, which is fine for
+# browser users (the frontend's nginx proxies /api/ to it internally) but
+# leaves `crow` CLI users -- who talk to the API directly, bypassing the
+# frontend entirely -- with no way to reach it at all. NodePort regardless
+# of CROW_DOMAIN/ingress, since ingress here only routes the frontend.
+HELM_ARGS+=(--set api.service.type=NodePort)
+if [ -n "$VYOS_HOST" ] && [ -n "$VYOS_UPLINK_INTERFACE" ] && [ -n "$VYOS_SSH_KEY_PATH" ]; then
+  HELM_ARGS+=(
+    --set operator.vyos.host="$VYOS_HOST"
+    --set operator.vyos.uplinkInterface="$VYOS_UPLINK_INTERFACE"
+    --set-file operator.vyos.sshPrivateKey="$VYOS_SSH_KEY_PATH"
+  )
+fi
 helm "${HELM_ARGS[@]}" --wait
+
+# Confirmed live: this used to hardcode the API's internal ClusterIP port
+# (8080), which was never actually reachable at that address -- querying
+# the real nodePort instead. Resolved once here since both the provider
+# self-registration call below and the final printed instructions need it.
+API_NODE_PORT="$(kubectl get svc -n "$NAMESPACE" crowcloud-api -o jsonpath='{.spec.ports[0].nodePort}')"
 
 if [ -n "$CROW_FLEET_SECRET" ]; then
   echo "==> Registering fleet secret for automatic host self-registration"
@@ -139,6 +181,33 @@ if [ -n "$CROW_FLEET_SECRET" ]; then
     "INSERT INTO fleet_secrets (secret, label) VALUES ('${CROW_FLEET_SECRET}', 'seed-bootstrap') ON CONFLICT (secret) DO NOTHING;"
 fi
 
+if [ -n "$PROXMOX_HOST_MAC" ]; then
+  echo "==> Registering the physical Proxmox host as crowCloud's first provider"
+  # This is the seed VM calling back into the crowCloud instance it just
+  # stood up on itself, over the NodePort just resolved above -- not a
+  # separate host joining an existing fleet (that's the same
+  # /hosts/register endpoint, but called from a *different* host's own
+  # post-install hook, with no proxmox_* fields since a provider already
+  # exists by then). See host_bootstrap.rs's own [] branch.
+  PROVIDER_REGISTER_PAYLOAD=$(cat <<JSON
+{"mac_address":"${PROXMOX_HOST_MAC}","node_name":"${PROXMOX_HOST_NODE_NAME}","default_storage":"${PROXMOX_HOST_STORAGE}","default_bridge":"${PROXMOX_HOST_BRIDGE}","management_ip":"${PROXMOX_HOST_MGMT_IP}","proxmox_url":"${PROXMOX_HOST_URL}","proxmox_token_id":"${PROXMOX_HOST_TOKEN_ID}","proxmox_token_secret":"${PROXMOX_HOST_TOKEN_SECRET}"}
+JSON
+)
+  set +e
+  PROVIDER_HTTP_CODE="$(curl -s -o /tmp/crowcloud-provider-register-response.json -w '%{http_code}' \
+    --connect-timeout 5 --max-time 15 \
+    -X POST "http://127.0.0.1:${API_NODE_PORT}/api/v1/internal/hosts/register" \
+    -H "X-Fleet-Secret: ${CROW_FLEET_SECRET}" \
+    -H 'Content-Type: application/json' \
+    -d "${PROVIDER_REGISTER_PAYLOAD}")"
+  PROVIDER_CURL_EXIT=$?
+  set -e
+  if [ "$PROVIDER_CURL_EXIT" -ne 0 ] || { [ "$PROVIDER_HTTP_CODE" != "200" ] && [ "$PROVIDER_HTTP_CODE" != "201" ]; }; then
+    echo "    provider self-registration failed (HTTP ${PROVIDER_HTTP_CODE:-000})" >&2
+    cat /tmp/crowcloud-provider-register-response.json >&2 || true
+  fi
+fi
+
 echo "==> Resolving the crowCloud URL"
 NODE_IP="$(hostname -I | awk '{print $1}')"
 if [ -n "$CROW_DOMAIN" ]; then
@@ -157,6 +226,6 @@ crowCloud is running.
 
   Prefer the CLI?
     Download crow-cli from https://github.com/GavinMce/crowCloud/releases
-    crow login --server http://$NODE_IP:8080
+    crow login --server http://$NODE_IP:$API_NODE_PORT
 
 EOF
