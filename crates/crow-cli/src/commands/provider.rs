@@ -56,6 +56,17 @@ struct ProviderRow {
     created_at: String,
 }
 
+/// Distinct from `ProviderRow` -- confirmed against the API's actual
+/// `create` handler (`crow-api/src/routes/providers.rs`), whose SQL only
+/// `RETURNING id, name, provider_type`. Reusing `ProviderRow` here (which
+/// requires `created_at`) fails to deserialize the create response even
+/// though the provider was created successfully.
+#[derive(Deserialize)]
+struct CreatedProvider {
+    id: String,
+    name: String,
+}
+
 #[derive(Serialize)]
 struct CreateProviderBody {
     name: String,
@@ -95,7 +106,7 @@ pub async fn run(cmd: ProviderCmd) -> Result<()> {
                     "tls_insecure": args.tls_insecure,
                 }),
             };
-            let p: ProviderRow = client.post("/api/v1/providers", &body).await?;
+            let p: CreatedProvider = client.post("/api/v1/providers", &body).await?;
             println!("Added provider '{}' ({})", p.name, p.id);
         }
         ProviderSubcommand::Delete { name } => {
