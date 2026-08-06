@@ -413,6 +413,19 @@ pub struct ProxmoxBuildArgs {
     /// console/SSH-inaccessible once cloud-init applies.
     #[arg(long)]
     pub seed_ssh_pubkey: Option<PathBuf>,
+    /// Physical uplink NIC name on the VyOS box (e.g. "eth1") -- not
+    /// asked in the wizard (advanced/optional): required together with
+    /// `--vyos-ssh-private-key` to let the seed VM auto-configure the
+    /// operator's VyOS connection. Omit both to leave that a manual
+    /// `helm upgrade --set operator.vyos.*` step after the fact, same
+    /// as before this existed.
+    #[arg(long, requires = "vyos_ssh_private_key")]
+    pub vyos_uplink_interface: Option<String>,
+    /// Private key path matching the public key baked into the VyOS
+    /// image via `crow-cli iso vyos build --ssh-pubkey`. Required
+    /// together with `--vyos-uplink-interface`.
+    #[arg(long, requires = "vyos_uplink_interface")]
+    pub vyos_ssh_private_key: Option<PathBuf>,
     #[arg(long, default_value = "./build")]
     pub out: PathBuf,
     /// Skip invoking `proxmox-auto-install-assistant` -- just render
@@ -1195,6 +1208,13 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
                 .map(|s| s.trim().to_string())
         })
         .transpose()?;
+    let vyos_ssh_private_key = args
+        .vyos_ssh_private_key
+        .map(|path| {
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("reading VyOS SSH private key at {}", path.display()))
+        })
+        .transpose()?;
 
     let cfg = proxmox_iso::ProxmoxBuildConfig {
         root_password_hash,
@@ -1219,6 +1239,8 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         underlay_prefix,
         ospf_area,
         seed_ssh_pubkey,
+        vyos_uplink_interface: args.vyos_uplink_interface,
+        vyos_ssh_private_key,
     };
 
     std::fs::create_dir_all(&args.out)?;

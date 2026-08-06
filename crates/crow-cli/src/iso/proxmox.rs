@@ -75,6 +75,28 @@ pub struct ProxmoxBuildConfig {
     /// Optional: omit to leave the seed VM console/SSH-inaccessible,
     /// same as before this existed.
     pub seed_ssh_pubkey: Option<String>,
+    /// Physical uplink NIC name on the VyOS box (e.g. "eth1") -- not
+    /// something this build can discover on its own (it's assigned live
+    /// at VyOS's own boot time by its interface auto-detection), so it's
+    /// manual input, same as `underlay_ip`/`bgp_route_reflector_ip`.
+    /// Together with `vyos_ssh_private_key`, lets the seed VM configure
+    /// the operator's VyOS connection automatically instead of that
+    /// being a manual `helm upgrade --set operator.vyos.*` step after
+    /// the fact (confirmed live: every fresh deployment otherwise starts
+    /// with `ExposedEndpoint` silently disabled). `mgmt_gateway` above
+    /// doubles as VyOS's own mgmt-VLAN IP -- no separate host field
+    /// needed.
+    pub vyos_uplink_interface: Option<String>,
+    /// Private key matching the public key baked into the VyOS image via
+    /// `crow-cli iso vyos build --ssh-pubkey`. Baked into the seed VM's
+    /// own cloud-init (a separate write_files entry, not reused from
+    /// `seed_ssh_pubkey` above -- that key is for logging into the seed
+    /// VM itself, a different keypair entirely) so `bootstrap.sh` can
+    /// pass it to Helm via `--set-file`. Both this and
+    /// `vyos_uplink_interface` are required together -- omit both to
+    /// leave VyOS auto-configuration off, same as leaving
+    /// `operator.vyos.host` empty always has.
+    pub vyos_ssh_private_key: Option<String>,
 }
 
 /// `answer.toml`'s `[disk-setup]` accepts either an explicit
@@ -141,11 +163,62 @@ const BOOTSTRAP_SH: &str = include_str!("../../deploy/bootstrap.sh");
 /// user-data already does, and `debian` already has passwordless sudo
 /// out of the box on the official image, which is enough to read
 /// `/var/log/crowcloud-bootstrap.log`.
-pub fn render_seed_cloud_init(fleet_secret: &str, ssh_pubkey: Option<&str>) -> String {
+/// Token *name* Proxmox's `pveum user token add root@pam <name>`
+/// expects; the resulting full ID crowCloud actually authenticates with
+/// is `root@pam!<name>`. Fixed rather than generated, since it's not a
+/// secret (the token *secret* is) and both the seed cloud-init and the
+/// post-install hook that creates the token need to agree on it.
+const PROXMOX_TOKEN_NAME: &str = "crow";
+
+pub fn render_seed_cloud_init(
+    fleet_secret: &str,
+    ssh_pubkey: Option<&str>,
+    mgmt_gateway: &str,
+    vyos: Option<(&str, &str)>,
+    proxmox_mgmt_ip: &str,
+) -> String {
     let ssh_authorized_keys = match ssh_pubkey {
         Some(key) => format!("ssh_authorized_keys:\n  - {key}\n"),
         None => String::new(),
     };
+
+    // Provider self-registration: lets the seed's own Proxmox host
+    // become crowCloud's first provider automatically instead of that
+    // being a manual `crow provider add-proxmox` step after the fact.
+    // The host's own MAC/hostname/storage/bridge, and the API token's
+    // secret, aren't knowable at this crate's build time -- this only
+    // renders the seed's cloud-init, it never runs on the real box --
+    // so they're left as literal placeholder tokens for
+    // `render_post_install_hook`'s own `sed` to substitute once it's
+    // actually detected/generated them there. The URL and token *name*
+    // aren't install-time-dynamic (the URL is built from a value this
+    // build already has; the name is fixed, see `PROXMOX_TOKEN_NAME`),
+    // so those are resolved directly, here.
+    let provider_env = format!(
+        " PROXMOX_HOST_MAC=__CROW_PROXMOX_MAC__ PROXMOX_HOST_NODE_NAME=__CROW_PROXMOX_NODE_NAME__ PROXMOX_HOST_STORAGE=__CROW_PROXMOX_STORAGE__ PROXMOX_HOST_BRIDGE=__CROW_PROXMOX_BRIDGE__ PROXMOX_HOST_TOKEN_SECRET=__CROW_PROXMOX_TOKEN_SECRET__ PROXMOX_HOST_MGMT_IP={proxmox_mgmt_ip} PROXMOX_HOST_URL=https://{proxmox_mgmt_ip}:8006 PROXMOX_HOST_TOKEN_ID=root@pam!{PROXMOX_TOKEN_NAME}"
+    );
+
+    // `vyos` is `Some((uplink_interface, ssh_private_key))` -- both
+    // required together, same as `operator.vyos.host`/`uplinkInterface`
+    // both being needed on the Helm side. Baking the key in as its own
+    // write_files entry (not reusing `seed_ssh_pubkey`'s keypair, which
+    // is for logging into the seed VM itself, a different key entirely)
+    // lets bootstrap.sh hand it straight to `helm --set-file` without
+    // ever writing it to this script's own source or logs.
+    let vyos_key_file = match vyos {
+        Some((_, key)) => format!(
+            "  - path: /root/vyos-ssh-key\n    permissions: '0600'\n    content: |\n{}\n",
+            indent(key, "      ")
+        ),
+        None => String::new(),
+    };
+    let vyos_env = match vyos {
+        Some((uplink_interface, _)) => format!(
+            " VYOS_HOST={mgmt_gateway} VYOS_UPLINK_INTERFACE={uplink_interface} VYOS_SSH_KEY_PATH=/root/vyos-ssh-key"
+        ),
+        None => String::new(),
+    };
+
     format!(
         r#"#cloud-config
 {ssh_authorized_keys}write_files:
@@ -153,8 +226,8 @@ pub fn render_seed_cloud_init(fleet_secret: &str, ssh_pubkey: Option<&str>) -> S
     permissions: '0755'
     content: |
 {bootstrap_sh}
-runcmd:
-  - [ bash, -c, "CROW_FLEET_SECRET={fleet_secret} /root/bootstrap.sh > /var/log/crowcloud-bootstrap.log 2>&1" ]
+{vyos_key_file}runcmd:
+  - [ bash, -c, "CROW_FLEET_SECRET={fleet_secret}{vyos_env}{provider_env} /root/bootstrap.sh > /var/log/crowcloud-bootstrap.log 2>&1" ]
 "#,
         ssh_authorized_keys = ssh_authorized_keys,
         bootstrap_sh = indent(BOOTSTRAP_SH, "      "),
@@ -247,7 +320,17 @@ pub fn render_answer_toml(cfg: &ProxmoxBuildConfig) -> String {
 /// existing crowCloud instance or, finding none, self-elects as the
 /// fleet's seed and stands crowCloud up on itself.
 pub fn render_post_install_hook(cfg: &ProxmoxBuildConfig) -> String {
-    let seed_cloud_init = render_seed_cloud_init(&cfg.fleet_secret, cfg.seed_ssh_pubkey.as_deref());
+    let vyos = match (&cfg.vyos_uplink_interface, &cfg.vyos_ssh_private_key) {
+        (Some(uplink), Some(key)) => Some((uplink.as_str(), key.as_str())),
+        _ => None,
+    };
+    let seed_cloud_init = render_seed_cloud_init(
+        &cfg.fleet_secret,
+        cfg.seed_ssh_pubkey.as_deref(),
+        &cfg.mgmt_gateway,
+        vyos,
+        &cfg.mgmt_ip,
+    );
     format!(
         r#"#!/usr/bin/env bash
 # Generated by `crow-cli iso proxmox build` -- see #66/#67.
@@ -504,11 +587,35 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
         fi
     fi
 
+    echo "==> Generating a Proxmox API token for crowCloud (root@pam!{token_name})"
+    # Idempotent, but not via reuse -- Proxmox only ever shows a token's
+    # secret once, at creation, so a token surviving from an earlier
+    # (partial/failed) run of this hook can't have its secret recovered.
+    # Recreate it instead of erroring on "already exists", so a rerun
+    # after a prior failure isn't wedged here forever.
+    if pveum user token list root@pam --output-format json 2>/dev/null | grep -q "\"tokenid\":\"{token_name}\""; then
+        echo "==> Token already exists -- deleting and recreating to recover its secret"
+        pveum user token remove root@pam "{token_name}"
+    fi
+    TOKEN_JSON="$(pveum user token add root@pam "{token_name}" --privsep=0 --output-format json)"
+    PROXMOX_TOKEN_SECRET="$(echo "${{TOKEN_JSON}}" | grep -oP '"value"\s*:\s*"\K[^"]+')"
+
     echo "==> Writing cloud-init user-data (runs bootstrap.sh unattended inside the guest)"
     mkdir -p /var/lib/vz/snippets
     cat > "/var/lib/vz/snippets/crowcloud-seed-${{SEED_VMID}}.yaml" <<'CLOUDINIT'
 {seed_cloud_init}
 CLOUDINIT
+    # The placeholders above are literal (the heredoc is quoted, so no
+    # shell expansion happened writing it) -- substitute in the real
+    # values this host has now detected/generated, none of which were
+    # knowable at this crate's build time (see render_seed_cloud_init).
+    sed -i \
+        -e "s|__CROW_PROXMOX_MAC__|${{MAC_ADDRESS}}|g" \
+        -e "s|__CROW_PROXMOX_NODE_NAME__|${{NODE_NAME}}|g" \
+        -e "s|__CROW_PROXMOX_STORAGE__|${{DEFAULT_STORAGE}}|g" \
+        -e "s|__CROW_PROXMOX_BRIDGE__|${{DEFAULT_BRIDGE}}|g" \
+        -e "s|__CROW_PROXMOX_TOKEN_SECRET__|${{PROXMOX_TOKEN_SECRET}}|g" \
+        "/var/lib/vz/snippets/crowcloud-seed-${{SEED_VMID}}.yaml"
 
     # A DHCP-assigned seed IP would be unknowable in advance, but every
     # future host's post-install hook is baked with this same
@@ -574,6 +681,7 @@ fi
         underlay_prefix = cfg.underlay_prefix,
         ospf_area = cfg.ospf_area,
         seed_cloud_init = seed_cloud_init,
+        token_name = PROXMOX_TOKEN_NAME,
     )
 }
 
@@ -605,6 +713,8 @@ mod tests {
             underlay_prefix: 24,
             ospf_area: "0".into(),
             seed_ssh_pubkey: None,
+            vyos_uplink_interface: None,
+            vyos_ssh_private_key: None,
         }
     }
 
@@ -1048,7 +1158,13 @@ mod tests {
 
     #[test]
     fn seed_cloud_init_bakes_the_literal_secret_not_a_shell_variable() {
-        let out = render_seed_cloud_init("literal-secret-value", None);
+        let out = render_seed_cloud_init(
+            "literal-secret-value",
+            None,
+            "10.20.0.1",
+            None,
+            "10.20.0.11",
+        );
         assert!(out.contains("CROW_FLEET_SECRET=literal-secret-value"));
         assert!(!out.contains("${FLEET_SECRET}"));
     }
@@ -1059,7 +1175,7 @@ mod tests {
         // login and no key of its own -- omitting this leaves the seed
         // VM entirely console/SSH-inaccessible, same as before this
         // existed, rather than silently defaulting to something.
-        let out = render_seed_cloud_init("x", None);
+        let out = render_seed_cloud_init("x", None, "10.20.0.1", None, "10.20.0.11");
         assert!(!out.contains("ssh_authorized_keys"));
     }
 
@@ -1070,7 +1186,13 @@ mod tests {
         // the top-level directive (applies to the image's own default
         // user, `debian` on Debian's official cloud image) sidesteps
         // that entirely instead of needing to override disable_root.
-        let out = render_seed_cloud_init("x", Some("ssh-ed25519 AAAA... test-key"));
+        let out = render_seed_cloud_init(
+            "x",
+            Some("ssh-ed25519 AAAA... test-key"),
+            "10.20.0.1",
+            None,
+            "10.20.0.11",
+        );
         assert!(out.starts_with(
             "#cloud-config\nssh_authorized_keys:\n  - ssh-ed25519 AAAA... test-key\n"
         ));
@@ -1080,7 +1202,7 @@ mod tests {
 
     #[test]
     fn seed_cloud_init_embeds_the_real_bootstrap_sh_not_a_placeholder() {
-        let out = render_seed_cloud_init("x", None);
+        let out = render_seed_cloud_init("x", None, "10.20.0.1", None, "10.20.0.11");
         assert!(out.contains("Day-0 bootstrap"));
         assert!(out.contains("Installing K3s"));
     }
@@ -1096,7 +1218,7 @@ mod tests {
         // registry as the Docker images via the release pipeline, so
         // the embedded seed-VM bootstrap should pull it from there
         // instead of cloning source.
-        let out = render_seed_cloud_init("x", None);
+        let out = render_seed_cloud_init("x", None, "10.20.0.1", None, "10.20.0.11");
         assert!(out.contains("oci://ghcr.io/gavinmce/charts/crowcloud"));
         assert!(!out.contains("git clone --depth 1"));
         assert!(!out.contains("github.com/GavinMce/crowCloud.git"));
