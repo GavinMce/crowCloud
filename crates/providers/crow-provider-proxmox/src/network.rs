@@ -60,18 +60,23 @@ fn vnet_id(vni: u32) -> String {
 /// surface area. `gateway`/`dns` stay purely informational, handed to
 /// VMs via `IpPool`/`IpClaim`, same as before.
 ///
-/// Confirmed live against a real Proxmox VE 9.2.6 install: Controller/
-/// Zone/VNet creation, idempotent re-detection of an already-created
-/// object, and the reload task all behave as this code expects -- see
-/// `EVPN_ZONE_VRF_VNI` and `exists`'s own doc comments for two real bugs
-/// that testing caught and fixed (a required-in-practice `vrf-vxlan`
-/// param the schema claimed was optional, and `exists` never actually
-/// working since Proxmox returns HTTP 500, not 404, for "doesn't
-/// exist"). Actual BGP EVPN session establishment with VyOS and
-/// cross-node VM reachability are still unverified -- blocked this round
-/// by an unrelated VyOS non-interactive-SSH scripting issue when trying
-/// to clear its peer-group password (see the session notes), not by
-/// anything in this file.
+/// Confirmed live against a real Proxmox VE 9.2.6 install and a real
+/// installed VyOS 1.5 route-reflector: Controller/Zone/VNet creation,
+/// idempotent re-detection of an already-created object, and the reload
+/// task all behave as this code expects -- see `EVPN_ZONE_VRF_VNI` and
+/// `exists`'s own doc comments for two real bugs that testing caught and
+/// fixed (a required-in-practice `vrf-vxlan` param the schema claimed
+/// was optional, and `exists` never actually working since Proxmox
+/// returns HTTP 500, not 404, for "doesn't exist"). Real BGP EVPN
+/// session establishment was also confirmed: after clearing VyOS's
+/// (now-optional, see `VyosBuildConfig::bgp_peer_password`) peer-group
+/// password, `show bgp summary` showed `Established` with the real
+/// Proxmox host within seconds, and creating a VNet produced a genuine
+/// EVPN Type-3 route on VyOS's side (`RT:<asn>:<vni>`, next-hop the
+/// Proxmox node's underlay IP) -- confirming the control plane a second
+/// node would use to learn where to tunnel VNI traffic. Only literal
+/// cross-node VM-to-VM reachability remains unverified, since this test
+/// fleet has just the one Proxmox node.
 pub async fn create_network(
     client: &ProxmoxClient,
     bgp_asn: Option<u32>,
