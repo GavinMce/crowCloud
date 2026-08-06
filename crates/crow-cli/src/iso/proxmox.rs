@@ -443,8 +443,12 @@ ifup "vmbr0.${{UNDERLAY_VLAN}}" || true
 # this host, unlike VyOS's own build -- FRR falls back to the highest
 # active interface address for its router-id absent one, which works
 # for basic OSPF/BGP adjacency but isn't stable across interface
-# changes. Left as a gap pending real VXLAN/EVPN wiring on the Proxmox
-# side, not needed just to get a peering session up.
+# changes. `PrivateSubnet`'s VXLAN/EVPN dataplane
+# (`crow-provider-proxmox::network::create_network`) uses this host's
+# underlay VLAN IP as its VTEP source instead of a dedicated loopback --
+# a real loopback would be more robust (survives this specific
+# interface flapping) but isn't required to get EVPN working, so it's
+# left as a gap for later.
 
 echo "==> Configuring FRR (OSPF underlay + BGP EVPN dynamic peer)"
 # Confirmed live: an earlier version of this hook assumed a per-app
@@ -453,6 +457,13 @@ echo "==> Configuring FRR (OSPF underlay + BGP EVPN dynamic peer)"
 # single integrated frr.conf (vtysh running-config syntax), assuming the
 # packaged default of `service integrated-vtysh-config` in
 # /etc/frr/vtysh.conf, which this doesn't verify or set explicitly.
+#
+# `advertise-all-vni`: zebra auto-discovers any local VXLAN netdevice
+# enslaved to a bridge (see `create_network` in crow-provider-proxmox)
+# and, with this set, advertises EVPN Type-3 routes for it over the
+# FABRIC peering above -- no explicit per-VNI mapping config needed.
+# Without it, this node's own VXLAN interfaces exist locally but are
+# never announced, so no other node ever learns to send them traffic.
 sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
 sed -i 's/^bgpd=no/bgpd=yes/' /etc/frr/daemons
 cat > /etc/frr/frr.conf <<FRRCONF
@@ -466,6 +477,7 @@ router bgp ${{BGP_ASN}}
  neighbor ${{BGP_ROUTE_REFLECTOR_IP}} peer-group FABRIC
  address-family l2vpn evpn
   neighbor FABRIC activate
+  advertise-all-vni
  exit-address-family
 !
 FRRCONF
@@ -487,7 +499,7 @@ MAC_ADDRESS="$(cat /sys/class/net/${{TRUNK_IF}}/address)"
 echo "==> Attempting self-registration with crowCloud at ${{CROW_API_URL}}"
 REGISTER_URL="${{CROW_API_URL%/}}/api/v1/internal/hosts/register"
 REGISTER_PAYLOAD=$(cat <<JSON
-{{"mac_address":"${{MAC_ADDRESS}}","node_name":"${{NODE_NAME}}","default_storage":"${{DEFAULT_STORAGE}}","default_bridge":"${{DEFAULT_BRIDGE}}","management_ip":"${{MGMT_IP}}"}}
+{{"mac_address":"${{MAC_ADDRESS}}","node_name":"${{NODE_NAME}}","default_storage":"${{DEFAULT_STORAGE}}","default_bridge":"${{DEFAULT_BRIDGE}}","management_ip":"${{MGMT_IP}}","underlay_ip":"${{UNDERLAY_IP}}"}}
 JSON
 )
 
@@ -853,6 +865,17 @@ mod tests {
         assert!(out.contains("sed -i 's/^bgpd=no/bgpd=yes/' /etc/frr/daemons"));
         assert!(out.contains("cat > /etc/frr/frr.conf"));
         assert!(out.contains("systemctl restart frr"));
+    }
+
+    #[test]
+    fn hook_advertises_all_vnis_so_local_vxlan_interfaces_are_actually_announced() {
+        // Without this, zebra auto-discovers local VXLAN netdevices (see
+        // create_network in crow-provider-proxmox) but never announces
+        // them over the existing FABRIC EVPN peering -- other nodes
+        // would never learn to send them traffic.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("neighbor FABRIC activate"));
+        assert!(out.contains("advertise-all-vni"));
     }
 
     #[test]

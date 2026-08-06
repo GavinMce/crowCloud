@@ -21,6 +21,11 @@ struct RegisterRequest {
     default_storage: String,
     default_bridge: String,
     management_ip: String,
+    /// This node's own IP on the underlay VLAN -- every fabric host has
+    /// one (unlike the seed-only `proxmox_*` fields below), used as the
+    /// VTEP source address for `PrivateSubnet`'s VXLAN/EVPN dataplane
+    /// (`crow-provider-proxmox::network::create_network`).
+    underlay_ip: String,
     /// Only consulted when no Proxmox provider exists yet (the seed
     /// host's own bootstrap, calling back in after standing crowCloud up
     /// on itself) -- lets it become the fleet's first provider
@@ -162,12 +167,13 @@ async fn register(
     .map_err(|e| ApiError::Internal(e.into()))?;
 
     sqlx::query(
-        "INSERT INTO provider_nodes (provider_id, node_name, default_storage, default_bridge, management_ip)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO provider_nodes (provider_id, node_name, default_storage, default_bridge, management_ip, underlay_ip)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (provider_id, node_name)
          DO UPDATE SET default_storage = EXCLUDED.default_storage,
                         default_bridge = EXCLUDED.default_bridge,
                         management_ip = EXCLUDED.management_ip,
+                        underlay_ip = EXCLUDED.underlay_ip,
                         updated_at = NOW()",
     )
     .bind(provider_id)
@@ -175,6 +181,7 @@ async fn register(
     .bind(&req.default_storage)
     .bind(&req.default_bridge)
     .bind(&req.management_ip)
+    .bind(&req.underlay_ip)
     .execute(&state.db)
     .await
     .map_err(|e| ApiError::Internal(e.into()))?;

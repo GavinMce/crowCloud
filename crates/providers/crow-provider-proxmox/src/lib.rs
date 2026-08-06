@@ -17,24 +17,42 @@ pub struct ProxmoxProvider {
     client: ProxmoxClient,
     default_storage: String,
     default_bridge: String,
+    /// This node's own underlay-VLAN IP -- used as the VXLAN VTEP source
+    /// for `create_network` (see `network.rs`). `None` for a node that
+    /// hasn't (re-)registered since migration 008 added it; `create_network`
+    /// errors clearly rather than building a VTEP with no source address.
+    underlay_ip: Option<String>,
+}
+
+/// Grouped rather than eight positional args on `ProxmoxProvider::new`
+/// (`clippy::too_many_arguments`) -- field names double as documentation
+/// at the one real call site (`crow-provider-registry::build_proxmox_provider`).
+pub struct ProxmoxProviderConfig<'a> {
+    pub url: &'a str,
+    pub token_id: &'a str,
+    pub token_secret: &'a str,
+    pub node: &'a str,
+    pub default_storage: &'a str,
+    pub default_bridge: &'a str,
+    pub underlay_ip: Option<&'a str>,
+    pub tls_insecure: bool,
 }
 
 impl ProxmoxProvider {
-    pub fn new(
-        url: &str,
-        token_id: &str,
-        token_secret: &str,
-        node: &str,
-        default_storage: &str,
-        default_bridge: &str,
-        tls_insecure: bool,
-    ) -> Result<Self, ProviderError> {
-        let client = ProxmoxClient::new(url, token_id, token_secret, node, tls_insecure)
-            .map_err(|e: ProxmoxError| ProviderError::from(e))?;
+    pub fn new(cfg: ProxmoxProviderConfig) -> Result<Self, ProviderError> {
+        let client = ProxmoxClient::new(
+            cfg.url,
+            cfg.token_id,
+            cfg.token_secret,
+            cfg.node,
+            cfg.tls_insecure,
+        )
+        .map_err(|e: ProxmoxError| ProviderError::from(e))?;
         Ok(Self {
             client,
-            default_storage: default_storage.to_string(),
-            default_bridge: default_bridge.to_string(),
+            default_storage: cfg.default_storage.to_string(),
+            default_bridge: cfg.default_bridge.to_string(),
+            underlay_ip: cfg.underlay_ip.map(str::to_string),
         })
     }
 
@@ -99,7 +117,7 @@ impl InfraProvider for ProxmoxProvider {
     }
 
     async fn create_network(&self, spec: NetworkSpec) -> Result<NetworkHandle, ProviderError> {
-        network::create_network(&self.client, &spec)
+        network::create_network(&self.client, self.underlay_ip.as_deref(), &spec)
             .await
             .map_err(Into::into)
     }

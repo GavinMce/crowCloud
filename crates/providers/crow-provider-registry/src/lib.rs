@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crow_core::traits::InfraProvider;
-use crow_provider_proxmox::ProxmoxProvider;
+use crow_provider_proxmox::{ProxmoxProvider, ProxmoxProviderConfig};
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -35,6 +35,13 @@ pub struct ProxmoxConfig {
     pub default_storage: Option<String>,
     #[serde(default)]
     pub default_bridge: Option<String>,
+    /// This node's own underlay-VLAN IP -- used as the VTEP source for
+    /// `PrivateSubnet`'s VXLAN/EVPN dataplane (see
+    /// `crow-provider-proxmox::network::create_network`). `Option` for the
+    /// same reason as `default_storage`/`default_bridge`: unresolved
+    /// connection-only config, or a node registered before this existed.
+    #[serde(default)]
+    pub underlay_ip: Option<String>,
     #[serde(default)]
     pub tls_insecure: bool,
 }
@@ -65,15 +72,16 @@ pub fn build_infra_provider(
 pub fn build_proxmox_provider(config: &Value) -> Result<ProxmoxProvider, RegistryError> {
     let cfg: ProxmoxConfig = serde_json::from_value(config.clone())
         .map_err(|e| RegistryError::InvalidConfig(format!("invalid proxmox config: {e}")))?;
-    ProxmoxProvider::new(
-        &cfg.url,
-        &cfg.token_id,
-        &cfg.token_secret,
-        cfg.node.as_deref().unwrap_or(""),
-        cfg.default_storage.as_deref().unwrap_or(""),
-        cfg.default_bridge.as_deref().unwrap_or(""),
-        cfg.tls_insecure,
-    )
+    ProxmoxProvider::new(ProxmoxProviderConfig {
+        url: &cfg.url,
+        token_id: &cfg.token_id,
+        token_secret: &cfg.token_secret,
+        node: cfg.node.as_deref().unwrap_or(""),
+        default_storage: cfg.default_storage.as_deref().unwrap_or(""),
+        default_bridge: cfg.default_bridge.as_deref().unwrap_or(""),
+        underlay_ip: cfg.underlay_ip.as_deref(),
+        tls_insecure: cfg.tls_insecure,
+    })
     .map_err(|e| RegistryError::InvalidConfig(format!("failed to build proxmox provider: {e}")))
 }
 
@@ -87,17 +95,17 @@ async fn resolved_node_defaults(
     provider_id: Uuid,
     node_name: &str,
     config: &Value,
-) -> Result<(String, String), RegistryError> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT default_storage, default_bridge FROM provider_nodes
+) -> Result<(String, String, Option<String>), RegistryError> {
+    let row: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT default_storage, default_bridge, underlay_ip FROM provider_nodes
          WHERE provider_id = $1 AND node_name = $2",
     )
     .bind(provider_id)
     .bind(node_name)
     .fetch_optional(pool)
     .await?;
-    if let Some((storage, bridge)) = row {
-        return Ok((storage, bridge));
+    if let Some((storage, bridge, underlay_ip)) = row {
+        return Ok((storage, bridge, underlay_ip));
     }
 
     let legacy_node = config.get("node").and_then(|v| v.as_str());
@@ -105,7 +113,10 @@ async fn resolved_node_defaults(
     let legacy_bridge = config.get("default_bridge").and_then(|v| v.as_str());
     if legacy_node == Some(node_name) {
         if let (Some(storage), Some(bridge)) = (legacy_storage, legacy_bridge) {
-            return Ok((storage.to_string(), bridge.to_string()));
+            // Legacy config predates underlay_ip entirely (see 007/008) --
+            // no VTEP source available for this node until it's re-adopted
+            // via the Nodes tab or re-registers itself.
+            return Ok((storage.to_string(), bridge.to_string(), None));
         }
     }
 
@@ -114,13 +125,24 @@ async fn resolved_node_defaults(
     )))
 }
 
-/// Splices the resolved node/storage/bridge into a copy of `config`.
-fn with_resolved_node(config: &Value, node_name: &str, storage: String, bridge: String) -> Value {
+/// Splices the resolved node/storage/bridge/underlay_ip into a copy of
+/// `config`.
+fn with_resolved_node(
+    config: &Value,
+    node_name: &str,
+    storage: String,
+    bridge: String,
+    underlay_ip: Option<String>,
+) -> Value {
     let mut config = config.clone();
     if let Some(obj) = config.as_object_mut() {
         obj.insert("node".to_string(), Value::String(node_name.to_string()));
         obj.insert("default_storage".to_string(), Value::String(storage));
         obj.insert("default_bridge".to_string(), Value::String(bridge));
+        obj.insert(
+            "underlay_ip".to_string(),
+            underlay_ip.map_or(Value::Null, Value::String),
+        );
     }
     config
 }
@@ -138,8 +160,9 @@ pub async fn resolve_provider_by_id(
             .fetch_optional(pool)
             .await?;
     let (provider_type, config) = row.ok_or(RegistryError::NotFound)?;
-    let (storage, bridge) = resolved_node_defaults(pool, provider_id, node_name, &config).await?;
-    let config = with_resolved_node(&config, node_name, storage, bridge);
+    let (storage, bridge, underlay_ip) =
+        resolved_node_defaults(pool, provider_id, node_name, &config).await?;
+    let config = with_resolved_node(&config, node_name, storage, bridge, underlay_ip);
     build_infra_provider(&provider_type, &config)
 }
 
@@ -160,8 +183,9 @@ pub async fn resolve_provider_by_name(
             .fetch_optional(pool)
             .await?;
     let (id, provider_type, config) = row.ok_or(RegistryError::NotFound)?;
-    let (storage, bridge) = resolved_node_defaults(pool, id, node_name, &config).await?;
-    let config = with_resolved_node(&config, node_name, storage, bridge);
+    let (storage, bridge, underlay_ip) =
+        resolved_node_defaults(pool, id, node_name, &config).await?;
+    let config = with_resolved_node(&config, node_name, storage, bridge, underlay_ip);
     Ok((id, build_infra_provider(&provider_type, &config)?))
 }
 
@@ -234,10 +258,28 @@ mod tests {
     #[test]
     fn with_resolved_node_overwrites_the_config_fields() {
         let config = serde_json::json!({ "url": "https://pve.example.com:8006" });
-        let resolved = with_resolved_node(&config, "pve2", "local-lvm".into(), "vmbr1".into());
+        let resolved = with_resolved_node(
+            &config,
+            "pve2",
+            "local-lvm".into(),
+            "vmbr1".into(),
+            Some("10.255.10.11".into()),
+        );
         assert_eq!(resolved["node"], "pve2");
         assert_eq!(resolved["default_storage"], "local-lvm");
         assert_eq!(resolved["default_bridge"], "vmbr1");
+        assert_eq!(resolved["underlay_ip"], "10.255.10.11");
         assert_eq!(resolved["url"], "https://pve.example.com:8006");
+    }
+
+    #[test]
+    fn with_resolved_node_nulls_underlay_ip_when_the_node_has_none_yet() {
+        // A node adopted before migration 008, or resolved via the legacy
+        // fallback -- no VTEP source available, but this must not fail the
+        // whole provider build (only PrivateSubnet creation needs it).
+        let config = serde_json::json!({ "url": "https://pve.example.com:8006" });
+        let resolved =
+            with_resolved_node(&config, "pve2", "local-lvm".into(), "vmbr1".into(), None);
+        assert!(resolved["underlay_ip"].is_null());
     }
 }
