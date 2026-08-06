@@ -388,9 +388,6 @@ pub struct ProxmoxBuildArgs {
     /// Falls back to the shared fabric config if omitted
     #[arg(long)]
     pub bgp_asn: Option<u32>,
-    /// Falls back to the shared fabric config if omitted
-    #[arg(long)]
-    pub bgp_peer_password: Option<String>,
     /// VyOS's own underlay IP -- the BGP route-reflector this host
     /// actively peers with. Falls back to the shared fabric config if
     /// omitted
@@ -514,9 +511,9 @@ fn fabric_configure(args: FabricConfigureArgs) -> Result<()> {
         "BGP ASN",
         existing.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
     )?;
-    let bgp_peer_password = wiz::prompt_secret(
+    let bgp_peer_password = wiz::prompt_secret_optional(
         args.bgp_peer_password
-            .or(existing.as_ref().map(|f| f.bgp_peer_password.clone())),
+            .or(existing.as_ref().and_then(|f| f.bgp_peer_password.clone())),
         "BGP peer-group password",
     )?;
     let bgp_route_reflector_ip = wiz::prompt(
@@ -732,9 +729,9 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         "BGP ASN",
         fabric.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
     )?;
-    let bgp_peer_password = wiz::prompt_secret(
+    let bgp_peer_password = wiz::prompt_secret_optional(
         args.bgp_peer_password
-            .or(fabric.as_ref().map(|f| f.bgp_peer_password.clone())),
+            .or(fabric.as_ref().and_then(|f| f.bgp_peer_password.clone())),
         "BGP peer-group password",
     )?;
     let dns_servers = wiz::prompt_list(
@@ -962,9 +959,9 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
         "BGP ASN",
         fabric.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
     )?;
-    let bgp_peer_password = wiz::prompt_secret(
+    let bgp_peer_password = wiz::prompt_secret_optional(
         args.bgp_peer_password
-            .or(fabric.as_ref().map(|f| f.bgp_peer_password.clone())),
+            .or(fabric.as_ref().and_then(|f| f.bgp_peer_password.clone())),
         "BGP peer-group password",
     )?;
     let dns_servers = wiz::prompt_list(
@@ -1174,11 +1171,6 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         "BGP ASN",
         fabric.as_ref().map(|f| f.bgp_asn).or(Some(65000)),
     )?;
-    let bgp_peer_password = wiz::prompt_secret(
-        args.bgp_peer_password
-            .or(fabric.as_ref().map(|f| f.bgp_peer_password.clone())),
-        "BGP peer-group password",
-    )?;
     let bgp_route_reflector_ip = wiz::prompt(
         args.bgp_route_reflector_ip,
         "VyOS's own underlay IP (the BGP route-reflector this host will peer with)",
@@ -1234,7 +1226,6 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         crow_api_url,
         fleet_secret,
         bgp_asn,
-        bgp_peer_password,
         bgp_route_reflector_ip,
         underlay_prefix,
         ospf_area,

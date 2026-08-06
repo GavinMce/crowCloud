@@ -46,6 +46,18 @@ pub struct AddProxmoxArgs {
     /// Skip TLS certificate verification
     #[arg(long)]
     pub tls_insecure: bool,
+    /// Fleet-wide BGP ASN, used to create Proxmox SDN's one-time EVPN
+    /// controller for `PrivateSubnet`'s VXLAN/EVPN dataplane. Only needed
+    /// if you plan to create private subnets against this provider --
+    /// omit for VM-only use. Set automatically for a provider created via
+    /// the seed host's own self-registration; this flag is for manually
+    /// adding a provider instead.
+    #[arg(long)]
+    pub bgp_asn: Option<u32>,
+    /// VyOS's own underlay IP (the BGP route-reflector Proxmox SDN's EVPN
+    /// controller peers with). See `bgp_asn`.
+    #[arg(long)]
+    pub bgp_route_reflector_ip: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +116,8 @@ pub async fn run(cmd: ProviderCmd) -> Result<()> {
                     "default_storage": args.storage,
                     "default_bridge": args.bridge,
                     "tls_insecure": args.tls_insecure,
+                    "bgp_asn": args.bgp_asn,
+                    "bgp_route_reflector_ip": args.bgp_route_reflector_ip,
                 }),
             };
             let p: CreatedProvider = client.post("/api/v1/providers", &body).await?;

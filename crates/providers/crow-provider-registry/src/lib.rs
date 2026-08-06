@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crow_core::traits::InfraProvider;
-use crow_provider_proxmox::ProxmoxProvider;
+use crow_provider_proxmox::{ProxmoxProvider, ProxmoxProviderConfig};
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -35,6 +35,15 @@ pub struct ProxmoxConfig {
     pub default_storage: Option<String>,
     #[serde(default)]
     pub default_bridge: Option<String>,
+    /// Fleet-wide (not per-node) -- needed to create Proxmox SDN's
+    /// one-time EVPN controller pointed at VyOS as route-reflector (see
+    /// `crow-provider-proxmox::network::create_network`). `Option` for the
+    /// same reason as `default_storage`/`default_bridge`: unresolved
+    /// connection-only config, or a provider created before this existed.
+    #[serde(default)]
+    pub bgp_asn: Option<u32>,
+    #[serde(default)]
+    pub bgp_route_reflector_ip: Option<String>,
     #[serde(default)]
     pub tls_insecure: bool,
 }
@@ -65,15 +74,17 @@ pub fn build_infra_provider(
 pub fn build_proxmox_provider(config: &Value) -> Result<ProxmoxProvider, RegistryError> {
     let cfg: ProxmoxConfig = serde_json::from_value(config.clone())
         .map_err(|e| RegistryError::InvalidConfig(format!("invalid proxmox config: {e}")))?;
-    ProxmoxProvider::new(
-        &cfg.url,
-        &cfg.token_id,
-        &cfg.token_secret,
-        cfg.node.as_deref().unwrap_or(""),
-        cfg.default_storage.as_deref().unwrap_or(""),
-        cfg.default_bridge.as_deref().unwrap_or(""),
-        cfg.tls_insecure,
-    )
+    ProxmoxProvider::new(ProxmoxProviderConfig {
+        url: &cfg.url,
+        token_id: &cfg.token_id,
+        token_secret: &cfg.token_secret,
+        node: cfg.node.as_deref().unwrap_or(""),
+        default_storage: cfg.default_storage.as_deref().unwrap_or(""),
+        default_bridge: cfg.default_bridge.as_deref().unwrap_or(""),
+        bgp_asn: cfg.bgp_asn,
+        bgp_route_reflector_ip: cfg.bgp_route_reflector_ip.as_deref(),
+        tls_insecure: cfg.tls_insecure,
+    })
     .map_err(|e| RegistryError::InvalidConfig(format!("failed to build proxmox provider: {e}")))
 }
 
@@ -239,5 +250,19 @@ mod tests {
         assert_eq!(resolved["default_storage"], "local-lvm");
         assert_eq!(resolved["default_bridge"], "vmbr1");
         assert_eq!(resolved["url"], "https://pve.example.com:8006");
+    }
+
+    #[test]
+    fn build_proxmox_provider_tolerates_missing_bgp_config() {
+        // Only PrivateSubnet creation (the one-time Proxmox SDN EVPN
+        // controller) needs bgp_asn/bgp_route_reflector_ip -- a provider
+        // created before they existed, or built for VM-only operations,
+        // must still build successfully without them.
+        let config = serde_json::json!({
+            "url": "https://pve.example.com:8006",
+            "token_id": "root@pam!crow",
+            "token_secret": "secret",
+        });
+        assert!(build_proxmox_provider(&config).is_ok());
     }
 }

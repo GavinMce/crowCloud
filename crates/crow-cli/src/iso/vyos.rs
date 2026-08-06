@@ -41,7 +41,15 @@ pub struct VyosBuildConfig {
     pub underlay_network_prefix: u8,
     pub ssh_pubkey: String,
     pub bgp_asn: u32,
-    pub bgp_peer_password: String,
+    /// Optional: Proxmox SDN's own EVPN controller (the only BGP peer
+    /// type this fleet's Proxmox side supports -- see
+    /// `crow-provider-proxmox::network`) has no BGP MD5 password support
+    /// at all, so setting this would leave VyOS rejecting every real
+    /// peer's connection attempt outright. Kept as an option rather than
+    /// removed entirely in case a future non-SDN peer needs it, but
+    /// `crow-cli iso proxmox build` never sets it on the Proxmox side
+    /// anymore, and passing one here today would just break peering.
+    pub bgp_peer_password: Option<String>,
     /// Recursive DNS forwarders the mgmt VLAN's hosts resolve through
     /// (this router acts as their forwarder -- see `mgmt_network`'s NAT
     /// rule below for why they need one at all). Confirmed live: not
@@ -249,10 +257,10 @@ pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
     ));
 
     // BGP EVPN route reflector, dynamic listen-range neighbors (not a
-    // static per-host list -- see #66's design note on why), with
-    // peer-group authentication so fabric membership requires the same
-    // shared secret baked into every Proxmox host's FRR config (#66's
-    // `--bgp-peer-password`), not merely L2 reachability to this VLAN.
+    // static per-host list -- see #66's design note on why). No
+    // peer-group password by default: Proxmox SDN's EVPN controller (the
+    // real, only peer today) can't send one at all -- see
+    // `bgp_peer_password`'s own doc comment.
     lines.push(format!("set protocols bgp system-as '{}'", cfg.bgp_asn));
     lines.push("set protocols bgp peer-group FABRIC remote-as 'internal'".to_string());
     lines.push(
@@ -262,10 +270,11 @@ pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
         "set protocols bgp peer-group FABRIC address-family l2vpn-evpn route-reflector-client"
             .to_string(),
     );
-    lines.push(format!(
-        "set protocols bgp peer-group FABRIC password '{}'",
-        cfg.bgp_peer_password
-    ));
+    if let Some(password) = &cfg.bgp_peer_password {
+        lines.push(format!(
+            "set protocols bgp peer-group FABRIC password '{password}'"
+        ));
+    }
     lines.push(format!(
         "set protocols bgp listen range '{}/{}' peer-group 'FABRIC'",
         cfg.underlay_network, cfg.underlay_network_prefix
@@ -307,7 +316,7 @@ mod tests {
             underlay_network_prefix: 24,
             ssh_pubkey: "ssh-ed25519 AAAAtest".into(),
             bgp_asn: 65000,
-            bgp_peer_password: "fabric-secret".into(),
+            bgp_peer_password: Some("fabric-secret".into()),
             dns_servers: vec!["8.8.8.8".into(), "8.8.4.4".into()],
             allow_password_auth: false,
             crow_api_mgmt_ip: None,
@@ -354,9 +363,21 @@ mod tests {
     }
 
     #[test]
-    fn requires_a_peer_group_password() {
+    fn sets_a_peer_group_password_when_given() {
         let out = render_configure_script(&cfg());
         assert!(out.contains("set protocols bgp peer-group FABRIC password 'fabric-secret'"));
+    }
+
+    #[test]
+    fn omits_the_peer_group_password_when_not_given() {
+        // Proxmox SDN's EVPN controller -- the only real BGP peer today --
+        // has no way to send one at all; requiring it here would leave
+        // every real peer unable to authenticate.
+        let out = render_configure_script(&VyosBuildConfig {
+            bgp_peer_password: None,
+            ..cfg()
+        });
+        assert!(!out.contains("peer-group FABRIC password"));
     }
 
     #[test]
