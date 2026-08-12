@@ -12,6 +12,7 @@ pub mod k8s;
 pub mod project;
 pub mod provider;
 pub mod store;
+pub mod subnet;
 pub mod tunnel;
 pub mod vm;
 
@@ -28,6 +29,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         crate::Commands::Domain(cmd) => domain::run(cmd).await,
         crate::Commands::Provider(cmd) => provider::run(cmd).await,
         crate::Commands::IpPool(cmd) => ippool::run(cmd).await,
+        crate::Commands::Subnet(cmd) => subnet::run(cmd).await,
         crate::Commands::Tunnel(cmd) => tunnel::run(cmd).await,
         crate::Commands::Iso(cmd) => iso::run(cmd).await,
     }
