@@ -2,14 +2,12 @@
 /// `iso vyos build`/`iso vyos flavor` (#66).
 ///
 /// Several values have to be typed identically across every one of
-/// these commands for the fabric to actually work -- `bgp_peer_password`
-/// mismatched between VyOS and a Proxmox host fails BGP peering
-/// silently, and there was previously nothing enforcing they matched
-/// beyond the operator remembering to type the same thing twice (or
-/// more, for `bgp_asn`/`underlay_vlan`/`mgmt_vlan`/`trunk_mtu`/
-/// `ospf_area`). `mgmt_gateway` is the same value under two different
-/// names on each side already -- it's VyOS's own `mgmt_ip` (the
-/// interface every Proxmox host's `--mgmt-gateway` points at).
+/// these commands for the fabric to actually work beyond the operator
+/// remembering to type the same thing twice (or more, for
+/// `bgp_asn`/`underlay_vlan`/`mgmt_vlan`/`trunk_mtu`/`ospf_area`).
+/// `mgmt_gateway` is the same value under two different names on each
+/// side already -- it's VyOS's own `mgmt_ip` (the interface every
+/// Proxmox host's `--mgmt-gateway` points at).
 ///
 /// Configured once via `crow iso fabric-configure`, persisted in the
 /// same local config file as the cached fleet secret (`Config`), then
@@ -43,7 +41,12 @@ pub struct FabricConfig {
     pub trunk_mtu: u32,
     pub ospf_area: String,
     pub bgp_asn: u32,
-    pub bgp_peer_password: String,
+    /// Optional -- Proxmox SDN's EVPN controller (the real BGP peer on
+    /// the Proxmox side, see `crow-provider-proxmox::network`) has no
+    /// way to send a BGP MD5 password at all, so this is expected to
+    /// stay unset in the common case. See `VyosBuildConfig`'s own field
+    /// of the same name.
+    pub bgp_peer_password: Option<String>,
     /// Only consumed by VyOS today (it forwards DNS for mgmt-VLAN
     /// hosts; Proxmox hosts just point resolv.conf at `mgmt_gateway`),
     /// kept here anyway since it's a fabric-wide network design

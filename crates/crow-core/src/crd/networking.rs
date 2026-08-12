@@ -74,6 +74,16 @@ pub struct IpClaimStatus {
 /// `IpPool` (created with an owner reference, so it cascades) pointing at
 /// the resulting bridge name, so a subnet and its address pool come into
 /// existence together instead of needing to be wired up by hand.
+///
+/// The dataplane is VXLAN carried over the fabric's existing underlay VLAN
+/// (see `crow-cli iso proxmox build`'s post-install hook), not a second
+/// physical VLAN -- an earlier version of this used `vlan_id` to create a
+/// plain 802.1Q VLAN per subnet, which needed the same physical trunk
+/// authorization fabric VLANs do (and, since nothing enslaved a physical
+/// port to the resulting bridge, didn't actually provide cross-node
+/// connectivity either). `vni` rides the underlay's existing BGP EVPN
+/// peering (already wired to VyOS as route-reflector) instead, so tenant
+/// networks span every node without touching the physical trunk at all.
 #[derive(CustomResource, Serialize, Deserialize, Debug, Clone, JsonSchema)]
 #[kube(
     group = "crow.cloud",
@@ -82,6 +92,7 @@ pub struct IpClaimStatus {
     namespaced,
     status = "PrivateSubnetStatus",
     shortname = "psubnet",
+    printcolumn = r#"{"name":"VNI","type":"integer","jsonPath":".spec.vni"}"#,
     printcolumn = r#"{"name":"Bridge","type":"string","jsonPath":".status.bridge"}"#,
     printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#
 )]
@@ -94,7 +105,12 @@ pub struct PrivateSubnetSpec {
     /// Which of the provider's adopted nodes to create the bridge on.
     pub node: String,
     pub cidr: String,
-    pub vlan_id: Option<u16>,
+    /// VXLAN VNI for this subnet. Must be unique across every
+    /// `PrivateSubnet` -- there is no central allocator yet (same as
+    /// `IpPoolSpec.cidr` being explicit rather than drawn from a pool of
+    /// pools), so the operator rejects a collision at reconcile time
+    /// instead of silently letting two subnets share a VNI.
+    pub vni: u32,
     pub gateway: String,
     pub dns: Vec<String>,
 }

@@ -62,8 +62,11 @@ pub struct VolumeHandle {
 pub struct NetworkSpec {
     pub name: String,
     pub cidr: Option<String>,
-    pub vlan_id: Option<u16>,
-    pub bridge: Option<String>,
+    /// VXLAN VNI this network is carried over -- see
+    /// `crd::networking::PrivateSubnetSpec` for why this replaced a plain
+    /// VLAN tag (cross-node tenant networks need to ride the fabric's
+    /// existing underlay/EVPN routing, not a second physical trunk VLAN).
+    pub vni: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

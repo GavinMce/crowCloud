@@ -21,6 +21,7 @@ use crow_provider_registry::{resolve_provider_by_name, VM_NAMESPACE};
 
 const FINALIZER: &str = "privatesubnet.crow.cloud/finalizer";
 const READY: &str = "Ready";
+const FAILED: &str = "Failed";
 
 #[derive(Debug, thiserror::Error)]
 enum ReconcileError {
@@ -28,6 +29,8 @@ enum ReconcileError {
     BadCidr(String),
     #[error("provider {0:?} could not create the bridge for this subnet's IpPool: still bound claims exist against it")]
     ClaimsStillBound(String),
+    #[error("VNI {vni} is already used by PrivateSubnet {other:?}")]
+    VniInUse { vni: u32, other: String },
     #[error(transparent)]
     Provider(#[from] crow_core::ProviderError),
     #[error(transparent)]
@@ -96,6 +99,29 @@ async fn apply(subnet: &PrivateSubnet, ctx: &Ctx) -> Result<Action, ReconcileErr
         return Ok(Action::requeue(Duration::from_secs(300)));
     }
 
+    // No central VNI allocator exists yet (mirrors `IpPoolSpec.cidr` being
+    // explicit rather than drawn from a pool of pools) -- catch a
+    // collision here instead of silently letting two subnets share a VNI
+    // and fight over the same VXLAN/bridge interfaces on every node.
+    let subnet_api: Api<PrivateSubnet> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
+    let existing = subnet_api.list(&ListParams::default()).await?;
+    if let Some(other) = vni_conflict(&existing.items, &subnet_name, subnet.spec.vni) {
+        let status = PrivateSubnetStatus {
+            phase: Some(FAILED.to_string()),
+            bridge: None,
+            ip_pool_ref: None,
+            message: Some(format!(
+                "VNI {} is already used by PrivateSubnet {other:?}",
+                subnet.spec.vni
+            )),
+        };
+        patch_status(ctx, &subnet_name, &status).await?;
+        return Err(ReconcileError::VniInUse {
+            vni: subnet.spec.vni,
+            other: other.to_string(),
+        });
+    }
+
     let (_provider_id, provider) = resolve_provider_by_name(
         &ctx.db,
         &subnet.spec.infra_provider_ref.name,
@@ -107,8 +133,7 @@ async fn apply(subnet: &PrivateSubnet, ctx: &Ctx) -> Result<Action, ReconcileErr
         .create_network(NetworkSpec {
             name: subnet_name.clone(),
             cidr: Some(subnet.spec.cidr.clone()),
-            vlan_id: subnet.spec.vlan_id,
-            bridge: None,
+            vni: subnet.spec.vni,
         })
         .await?;
 
@@ -167,6 +192,16 @@ async fn ensure_ip_pool(
         Err(kube::Error::Api(e)) if e.code == 409 => Ok(()),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Name of another `PrivateSubnet` in `existing` already claiming `vni`,
+/// if any. Pure and self-contained so it's unit-testable without a real
+/// kube API, same as `default_range` below.
+fn vni_conflict<'a>(existing: &'a [PrivateSubnet], self_name: &str, vni: u32) -> Option<&'a str> {
+    existing.iter().find_map(|other| {
+        let other_name = other.metadata.name.as_deref()?;
+        (other_name != self_name && other.spec.vni == vni).then_some(other_name)
+    })
 }
 
 /// First and last usable host addresses in `cidr`, excluding the network
@@ -280,6 +315,47 @@ async fn patch_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn subnet(name: &str, vni: u32) -> PrivateSubnet {
+        PrivateSubnet {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            spec: crow_core::crd::networking::PrivateSubnetSpec {
+                infra_provider_ref: crow_core::crd::common::ResourceRef {
+                    name: "pve".to_string(),
+                    namespace: None,
+                },
+                node: "pve1".to_string(),
+                cidr: "10.30.0.0/24".to_string(),
+                vni,
+                gateway: "10.30.0.1".to_string(),
+                dns: vec![],
+            },
+            status: None,
+        }
+    }
+
+    #[test]
+    fn vni_conflict_finds_another_subnet_claiming_the_same_vni() {
+        let existing = vec![subnet("tenant-a", 100), subnet("tenant-b", 200)];
+        assert_eq!(vni_conflict(&existing, "tenant-c", 200), Some("tenant-b"));
+    }
+
+    #[test]
+    fn vni_conflict_ignores_the_subnet_being_reconciled_itself() {
+        // A subnet reconciling repeatedly (e.g. requeued before reaching
+        // Ready) must not conflict with its own prior listing.
+        let existing = vec![subnet("tenant-a", 100)];
+        assert_eq!(vni_conflict(&existing, "tenant-a", 100), None);
+    }
+
+    #[test]
+    fn vni_conflict_is_none_when_every_vni_is_distinct() {
+        let existing = vec![subnet("tenant-a", 100), subnet("tenant-b", 200)];
+        assert_eq!(vni_conflict(&existing, "tenant-c", 300), None);
+    }
 
     #[test]
     fn default_range_excludes_network_broadcast_and_gateway() {

@@ -107,6 +107,31 @@ pub fn prompt_secret(flag_value: Option<String>, label: &str) -> Result<String> 
         .context("reading interactive password input")
 }
 
+/// Masked input, but skippable -- unlike `prompt_secret`, an empty
+/// response (or no terminal at all) is `Ok(None)`, not an error. For
+/// secrets that are genuinely optional, like the BGP peer-group password
+/// (see its own doc comment on `VyosBuildConfig` -- Proxmox SDN's EVPN
+/// controller can't send one at all, so this is expected to be skipped
+/// in the common case, not a required field with a rare exception).
+pub fn prompt_secret_optional(flag_value: Option<String>, label: &str) -> Result<Option<String>> {
+    if let Some(v) = flag_value {
+        return Ok(if v.is_empty() { None } else { Some(v) });
+    }
+    if !is_interactive() {
+        return Ok(None);
+    }
+    let response = Password::new()
+        .with_prompt(format!("{label} (optional, leave blank to skip)"))
+        .allow_empty_password(true)
+        .interact()
+        .context("reading interactive password input")?;
+    Ok(if response.is_empty() {
+        None
+    } else {
+        Some(response)
+    })
+}
+
 pub fn prompt_bool(flag_value: Option<bool>, label: &str, default: bool) -> Result<bool> {
     if let Some(v) = flag_value {
         return Ok(v);
@@ -248,6 +273,19 @@ mod tests {
     fn prompt_secret_errors_clearly_when_non_interactive() {
         let err = prompt_secret(None, "bgp password").unwrap_err();
         assert!(err.to_string().contains("bgp password"));
+    }
+
+    #[test]
+    fn prompt_secret_optional_returns_the_flag_value_without_touching_the_terminal_when_present() {
+        assert_eq!(
+            prompt_secret_optional(Some("shh".to_string()), "bgp password").unwrap(),
+            Some("shh".to_string())
+        );
+    }
+
+    #[test]
+    fn prompt_secret_optional_falls_back_to_none_when_non_interactive() {
+        assert_eq!(prompt_secret_optional(None, "bgp password").unwrap(), None);
     }
 
     #[test]

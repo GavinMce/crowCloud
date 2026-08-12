@@ -31,6 +31,14 @@ struct RegisterRequest {
     proxmox_url: Option<String>,
     proxmox_token_id: Option<String>,
     proxmox_token_secret: Option<String>,
+    /// Fleet-wide BGP facts needed for `PrivateSubnet`'s VXLAN/EVPN
+    /// dataplane -- specifically, to create the one-time Proxmox SDN EVPN
+    /// controller pointed at VyOS (`crow-provider-proxmox::network`).
+    /// Provider-wide, not per-node (unlike e.g. `management_ip`), so
+    /// these only matter -- and are only consulted -- alongside the
+    /// other `proxmox_*` fields above, on first-provider creation.
+    bgp_asn: Option<u32>,
+    bgp_route_reflector_ip: Option<String>,
 }
 
 /// Tells the post-install hook (#66/#67) what to do with `pvecm` --
@@ -128,6 +136,8 @@ async fn register(
                     "node": req.node_name,
                     "default_storage": req.default_storage,
                     "default_bridge": req.default_bridge,
+                    "bgp_asn": req.bgp_asn,
+                    "bgp_route_reflector_ip": req.bgp_route_reflector_ip,
                 });
                 build_infra_provider("proxmox", &config)?;
                 let name = format!("proxmox-{}", req.node_name);

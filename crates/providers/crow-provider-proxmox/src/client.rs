@@ -132,6 +132,28 @@ impl ProxmoxClient {
         Err(ProxmoxError::Api { status, message })
     }
 
+    /// PUT that expects a non-null data field in the response -- unlike
+    /// `put`, for endpoints that return something (e.g. `PUT /cluster/sdn`,
+    /// which -- unlike the per-node network apply -- kicks off an async
+    /// Proxmox task and returns its UPID rather than completing
+    /// synchronously; the caller is expected to `wait_task` on it).
+    pub async fn put_returning<B: Serialize + ?Sized, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, ProxmoxError> {
+        let resp = self
+            .http
+            .put(self.url(path))
+            .header("Authorization", &self.auth)
+            .form(body)
+            .send()
+            .await?;
+        let env: PveEnvelope<T> = self.parse_raw(resp).await?;
+        env.data
+            .ok_or_else(|| ProxmoxError::Parse("empty data field".into()))
+    }
+
     /// DELETE; returns the UPID task string if the operation is async, or None.
     pub async fn delete(
         &self,
