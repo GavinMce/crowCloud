@@ -45,6 +45,8 @@ pub enum Commands {
     Provider(commands::provider::ProviderCmd),
     /// Manage IP pools
     IpPool(commands::ippool::IpPoolCmd),
+    /// Manage private subnets (VXLAN/EVPN)
+    Subnet(commands::subnet::SubnetCmd),
     /// Manage VPS tunnel endpoint
     Tunnel(commands::tunnel::TunnelCmd),
     /// Build pre-baked VyOS/Proxmox installer images (#66)
