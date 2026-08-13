@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/GavinMce/crowCloud/compare/crow-core-v0.1.1...crow-core-v0.2.0) - 2026-08-13
+
+### Added
+
+- *(cli)* add crow subnet and crow expose commands ([#93](https://github.com/GavinMce/crowCloud/pull/93))
+- *(networking)* real VXLAN/EVPN dataplane for PrivateSubnet ([#92](https://github.com/GavinMce/crowCloud/pull/92))
+
 ## [0.1.0](https://github.com/GavinMce/crowCloud/releases/tag/crow-core-v0.1.0) - 2026-06-30
 
 ### Other
