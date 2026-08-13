@@ -305,25 +305,28 @@ pub fn render_answer_toml(cfg: &ProxmoxBuildConfig) -> String {
             }
         }
     }
-    out.push('\n');
 
-    // Confirmed live: `--on-first-boot` (the CLI flag bundling the hook
-    // script into the ISO) does nothing on its own -- the installed
-    // system won't actually run it without this section explicitly
-    // enabling it. `source = "from-iso"` matches passing the hook via
-    // `--on-first-boot` at prepare-iso time (as opposed to fetching it
-    // over HTTP at first-boot instead).
-    out.push_str("[first-boot]\n");
-    out.push_str("source = \"from-iso\"\n");
-
+    // No `[first-boot]` section -- `--on-first-boot` (the
+    // proxmox-auto-install-assistant flag it would enable) didn't
+    // reliably trigger in practice, so the post-install hook is no
+    // longer bundled as an automatic first-boot step at all. It's
+    // still rendered to `post-install-hook.sh` alongside this file (see
+    // `crow-cli iso proxmox build`) for copying onto the box and running
+    // by hand over SSH once the base install finishes.
     out
 }
 
-/// The post-install hook (#66/#67) -- runs once, on first boot after the
-/// base Proxmox install completes. Implements the underlay/fabric setup
-/// mirroring VyOS's own config, then either self-registers with an
-/// existing crowCloud instance or, finding none, self-elects as the
-/// fleet's seed and stands crowCloud up on itself.
+/// The post-install hook (#66/#67) -- copied onto the box and run by hand
+/// over SSH once the base Proxmox install completes, rather than fired
+/// automatically (`proxmox-auto-install-assistant`'s `--on-first-boot`
+/// didn't reliably trigger in practice, so this is no longer wired up as
+/// a first-boot hook -- see `crow-cli iso proxmox build`'s own doc
+/// comment). Implements the underlay/fabric setup mirroring VyOS's own
+/// config, then either self-registers with an existing crowCloud instance
+/// or, finding none, self-elects as the fleet's seed and stands crowCloud
+/// up on itself. Numbered `step()` calls plus an `ERR` trap (see
+/// `step_output`) give a hand-run session over SSH clear, resumable
+/// progress instead of terse one-line `echo`s.
 pub fn render_post_install_hook(cfg: &ProxmoxBuildConfig) -> String {
     let vyos = match (&cfg.vyos_uplink_interface, &cfg.vyos_ssh_private_key) {
         (Some(uplink), Some(key)) => Some((uplink.as_str(), key.as_str())),
@@ -358,11 +361,12 @@ BGP_ROUTE_REFLECTOR_IP="{bgp_route_reflector_ip}"
 UNDERLAY_PREFIX="{underlay_prefix}"
 OSPF_AREA="{ospf_area}"
 
-echo "==> Installing FRR"
+{step_framework}
+step "Installing FRR"
 apt-get update
 apt-get install -y frr
 
-echo "==> Bringing up trunk (${{TRUNK_IF}}) at the fabric MTU"
+step "Bringing up trunk (${{TRUNK_IF}}) at the fabric MTU"
 # Confirmed live: a VLAN subinterface can never exceed its parent's MTU
 # at creation time -- bringing up any VLAN child before the physical
 # trunk was raised to jumbo frames silently capped it at the default
@@ -381,7 +385,7 @@ if ! grep -q "    mtu ${{TRUNK_MTU}}" /etc/network/interfaces; then
     sed -i "/^iface ${{TRUNK_IF}} /a\    mtu ${{TRUNK_MTU}}" /etc/network/interfaces
 fi
 
-echo "==> Configuring vmbr0 as a proper VLAN-aware bridge"
+step "Configuring vmbr0 as a proper VLAN-aware bridge"
 # Confirmed live, the hard way, across several real bugs stacked on top
 # of each other -- this whole block replaces an earlier, broken
 # approach that put the host's own underlay/mgmt IPs on classic 8021q
@@ -409,7 +413,7 @@ if ! grep -q "bridge-vlan-aware yes" /etc/network/interfaces; then
     ifreload -a || true
 fi
 
-echo "==> Configuring management VLAN (vmbr0.${{MGMT_VLAN}})"
+step "Configuring management VLAN (vmbr0.${{MGMT_VLAN}})"
 cat >> /etc/network/interfaces <<IFACES
 
 auto vmbr0.${{MGMT_VLAN}}
@@ -434,7 +438,7 @@ search fleet.local
 nameserver ${{MGMT_GATEWAY}}
 RESOLV
 
-echo "==> Configuring underlay VLAN (vmbr0.${{UNDERLAY_VLAN}})"
+step "Configuring underlay VLAN (vmbr0.${{UNDERLAY_VLAN}})"
 cat >> /etc/network/interfaces <<IFACES
 
 auto vmbr0.${{UNDERLAY_VLAN}}
@@ -452,7 +456,7 @@ ifup "vmbr0.${{UNDERLAY_VLAN}}" || true
 # gap: a real loopback + router-id is a separate change from anything
 # EVPN-related, since VTEP source addressing is entirely Proxmox SDN's
 # own concern now (see below), not something this hook configures.
-echo "==> Configuring FRR (OSPF underlay)"
+step "Configuring FRR (OSPF underlay)"
 # Confirmed live: an earlier version of this hook assumed a per-app
 # config-drop-in directory that doesn't exist in real FRR packaging --
 # the actual model is /etc/frr/daemons (which daemons start) plus a
@@ -488,7 +492,7 @@ echo "${{OSPF_CONFIG}}" > /etc/frr/frr.conf
 echo "${{OSPF_CONFIG}}" > /etc/frr/frr.conf.local
 systemctl restart frr
 
-echo "==> Detecting local Proxmox defaults"
+step "Detecting local Proxmox defaults"
 DEFAULT_STORAGE="$(pvesm status --content images 2>/dev/null | awk 'NR==2{{print $1}}')"
 # Confirmed live: block-based storages that support `images` content
 # (e.g. lvmthin, the common default for VM disks) do NOT support the
@@ -501,7 +505,7 @@ DEFAULT_BRIDGE="vmbr0"
 NODE_NAME="$(hostname)"
 MAC_ADDRESS="$(cat /sys/class/net/${{TRUNK_IF}}/address)"
 
-echo "==> Attempting self-registration with crowCloud at ${{CROW_API_URL}}"
+step "Attempting self-registration with crowCloud at ${{CROW_API_URL}}"
 REGISTER_URL="${{CROW_API_URL%/}}/api/v1/internal/hosts/register"
 REGISTER_PAYLOAD=$(cat <<JSON
 {{"mac_address":"${{MAC_ADDRESS}}","node_name":"${{NODE_NAME}}","default_storage":"${{DEFAULT_STORAGE}}","default_bridge":"${{DEFAULT_BRIDGE}}","management_ip":"${{MGMT_IP}}"}}
@@ -530,7 +534,7 @@ if [ "${{CURL_EXIT}}" -ne 0 ]; then
 fi
 
 if [ "${{HTTP_CODE}}" = "000" ]; then
-    echo "==> No crowCloud instance reachable at ${{CROW_API_URL}} -- self-electing as fleet seed (#67)"
+    step "No crowCloud instance reachable at ${{CROW_API_URL}} -- self-electing as fleet seed (#67)"
 
     # A truly fresh first host has no templates to clone -- unlike
     # regular VM provisioning (which should reuse whatever template
@@ -543,19 +547,18 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
     # arbitrary input, matching #40's stated preference for a small
     # curated catalog over open-ended URLs.
     if [ -z "${{IMPORT_STORAGE}}" ]; then
-        echo "==> No storage supporting the 'import' content type was found -- cannot fetch the seed image" >&2
-        exit 1
+        fail "No storage supporting the 'import' content type was found -- cannot fetch the seed image"
     fi
 
     SEED_VMID="$(pvesh get /cluster/nextid)"
     SEED_IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
-    echo "==> Fetching base image for the seed VM (${{SEED_IMAGE_URL}}) onto ${{IMPORT_STORAGE}}"
+    step "Fetching base image for the seed VM (${{SEED_IMAGE_URL}}) onto ${{IMPORT_STORAGE}}"
     pvesh create /nodes/"${{NODE_NAME}}"/storage/"${{IMPORT_STORAGE}}"/download-url \
         --url "${{SEED_IMAGE_URL}}" \
         --content import \
         --filename "crowcloud-seed-base.qcow2"
 
-    echo "==> Creating seed VM ${{SEED_VMID}} from that image (guest, not the bare host OS)"
+    step "Creating seed VM ${{SEED_VMID}} from that image (guest, not the bare host OS)"
     # Tagged onto MGMT_VLAN explicitly -- vmbr0 is VLAN-aware but
     # untagged/native by default for any port that isn't given a `tag=`,
     # and the host's own mgmt access is vmbr0.${{MGMT_VLAN}} (see above), so
@@ -594,7 +597,7 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
     # own output indicating anything went wrong. `pvesm set` replaces
     # the whole content list, not adds to it -- read the existing list
     # first so this doesn't clobber iso/vztmpl/backup support on local.
-    echo "==> Ensuring 'local' storage supports snippets (needed for the seed VM's cloud-init)"
+    step "Ensuring 'local' storage supports snippets (needed for the seed VM's cloud-init)"
     if ! pvesm status --content snippets 2>/dev/null | awk 'NR>1{{print $1}}' | grep -qx local; then
         CURRENT_CONTENT="$(awk '/^dir: local$/{{f=1}} f && /^[[:space:]]*content /{{print $2; exit}}' /etc/pve/storage.cfg)"
         if [ -n "${{CURRENT_CONTENT}}" ]; then
@@ -604,20 +607,20 @@ if [ "${{HTTP_CODE}}" = "000" ]; then
         fi
     fi
 
-    echo "==> Generating a Proxmox API token for crowCloud (root@pam!{token_name})"
+    step "Generating a Proxmox API token for crowCloud (root@pam!{token_name})"
     # Idempotent, but not via reuse -- Proxmox only ever shows a token's
     # secret once, at creation, so a token surviving from an earlier
     # (partial/failed) run of this hook can't have its secret recovered.
     # Recreate it instead of erroring on "already exists", so a rerun
     # after a prior failure isn't wedged here forever.
     if pveum user token list root@pam --output-format json 2>/dev/null | grep -q "\"tokenid\":\"{token_name}\""; then
-        echo "==> Token already exists -- deleting and recreating to recover its secret"
+        echo "Token already exists -- deleting and recreating to recover its secret"
         pveum user token remove root@pam "{token_name}"
     fi
     TOKEN_JSON="$(pveum user token add root@pam "{token_name}" --privsep=0 --output-format json)"
     PROXMOX_TOKEN_SECRET="$(echo "${{TOKEN_JSON}}" | grep -oP '"value"\s*:\s*"\K[^"]+')"
 
-    echo "==> Writing cloud-init user-data (runs bootstrap.sh unattended inside the guest)"
+    step "Writing cloud-init user-data (runs bootstrap.sh unattended inside the guest)"
     mkdir -p /var/lib/vz/snippets
     cat > "/var/lib/vz/snippets/crowcloud-seed-${{SEED_VMID}}.yaml" <<'CLOUDINIT'
 {seed_cloud_init}
@@ -644,8 +647,7 @@ CLOUDINIT
     # at this point in the bootstrap.
     SEED_STATIC_IP="$(echo "${{CROW_API_URL}}" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[/:].*##')"
     if ! [[ "${{SEED_STATIC_IP}}" =~ ^([0-9]{{1,3}}\.){{3}}[0-9]{{1,3}}$ ]]; then
-        echo "==> CROW_API_URL (${{CROW_API_URL}}) does not resolve to an IPv4 literal host -- cannot assign the seed VM a matching static IP. Use an IP literal (e.g. http://${{MGMT_GATEWAY%.*}}.50:8080) instead of a hostname for the first/seed build." >&2
-        exit 1
+        fail "CROW_API_URL (${{CROW_API_URL}}) does not resolve to an IPv4 literal host -- cannot assign the seed VM a matching static IP. Use an IP literal (e.g. http://${{MGMT_GATEWAY%.*}}.50:8080) instead of a hostname for the first/seed build."
     fi
 
     qm set "${{SEED_VMID}}" \
@@ -662,26 +664,26 @@ CLOUDINIT
     # tool itself) -- treat this sequence as best-effort pending a real
     # run. `bootstrap.sh`'s own progress is visible at
     # /var/log/crowcloud-bootstrap.log *inside* that guest.
-    echo "==> VM ${{SEED_VMID}} started -- crowCloud is deploying inside it unattended."
-    echo "    Check /var/log/crowcloud-bootstrap.log on that guest, or ${{CROW_API_URL}} once it comes up."
+    echo "VM ${{SEED_VMID}} started -- crowCloud is deploying inside it unattended."
+    echo "Check /var/log/crowcloud-bootstrap.log on that guest, or ${{CROW_API_URL}} once it comes up."
 
 elif [ "${{HTTP_CODE}}" = "200" ] || [ "${{HTTP_CODE}}" = "201" ]; then
-    echo "==> Registered with crowCloud at ${{CROW_API_URL}}"
+    step "Registered with crowCloud at ${{CROW_API_URL}}"
     CLUSTER_ACTION="$(jq -r '.cluster_action.action' /tmp/crowcloud-register-response.json)"
     if [ "${{CLUSTER_ACTION}}" = "create" ]; then
-        echo "==> First real node for this provider -- pvecm create"
+        echo "First real node for this provider -- pvecm create"
         pvecm create crowcloud-fleet
     else
         JOIN_HOST="$(jq -r '.cluster_action.join_host' /tmp/crowcloud-register-response.json)"
-        echo "==> Joining existing cluster via ${{JOIN_HOST}}"
+        echo "Joining existing cluster via ${{JOIN_HOST}}"
         pvecm add "${{JOIN_HOST}}"
     fi
 else
-    echo "crowCloud reachable but registration failed (HTTP ${{HTTP_CODE}})" >&2
     cat /tmp/crowcloud-register-response.json >&2 || true
-    exit 1
+    fail "crowCloud reachable but registration failed (HTTP ${{HTTP_CODE}})"
 fi
-"#,
+
+{on_success}"#,
         trunk_interface = cfg.trunk_interface,
         underlay_vlan = cfg.underlay_vlan,
         underlay_ip = cfg.underlay_ip,
@@ -698,6 +700,8 @@ fi
         ospf_area = cfg.ospf_area,
         seed_cloud_init = seed_cloud_init,
         token_name = PROXMOX_TOKEN_NAME,
+        step_framework = crate::iso::step_output::render_step_framework(),
+        on_success = crate::iso::step_output::render_on_success_call(),
     )
 }
 
@@ -741,15 +745,21 @@ mod tests {
     }
 
     #[test]
-    fn answer_toml_includes_mailto_and_enables_first_boot() {
-        // Both confirmed live: `[global].mailto` is a hard requirement
-        // (validate-answer rejects the file without it), and
-        // `[first-boot]` is what actually makes `--on-first-boot` do
-        // anything at all.
+    fn answer_toml_includes_mailto() {
+        // Confirmed live: `[global].mailto` is a hard requirement --
+        // validate-answer rejects the file without it.
         let out = render_answer_toml(&cfg());
         assert!(out.contains("mailto = \"admin@fleet.local\""));
-        assert!(out.contains("[first-boot]"));
-        assert!(out.contains("source = \"from-iso\""));
+    }
+
+    #[test]
+    fn answer_toml_has_no_automatic_first_boot_trigger() {
+        // `--on-first-boot` didn't reliably fire in practice -- the
+        // post-install hook is copied over and run by hand instead (see
+        // `render_post_install_hook`'s doc comment), so `[first-boot]`
+        // is never emitted.
+        let out = render_answer_toml(&cfg());
+        assert!(!out.contains("[first-boot]"));
     }
 
     #[test]
@@ -820,6 +830,65 @@ mod tests {
         let out = render_answer_toml(&c);
         assert!(out.contains("filesystem = \"ext4\""));
         assert!(!out.contains("zfs.raid"));
+    }
+
+    #[test]
+    fn hook_is_syntactically_valid_bash() {
+        // `bash -n` parses without executing -- catches quoting/brace
+        // mistakes from the step-framework interpolation (a doubled
+        // `{{`/`}}` slipping through wrong, etc.) that plain substring
+        // assertions elsewhere in this file wouldn't.
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let out = render_post_install_hook(&cfg());
+        let mut child = Command::new("bash")
+            .arg("-n")
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("bash must be on PATH to run this test");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(out.as_bytes())
+            .unwrap();
+        let result = child.wait_with_output().unwrap();
+        assert!(
+            result.status.success(),
+            "bash -n reported a syntax error:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[test]
+    fn hook_reports_numbered_steps_and_a_final_summary() {
+        // The hook is copied over and run by hand over SSH now (no
+        // reliable `--on-first-boot` trigger left, see this function's
+        // own doc comment) -- someone watching it live needs numbered
+        // progress and a clear success confirmation, not terse one-line
+        // echoes with no structure.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("step \"Installing FRR\""));
+        assert!(out.contains("step \"Attempting self-registration with crowCloud"));
+        assert!(out.trim_end().ends_with("on_success"));
+    }
+
+    #[test]
+    fn hook_uses_fail_not_a_bare_exit_on_its_explicit_error_paths() {
+        // `fail` prints the same completed-step context the `ERR` trap
+        // would for a command that errors out, so every deliberate
+        // "can't continue" branch in this hook is equally diagnosable
+        // over a hand-run SSH session.
+        let out = render_post_install_hook(&cfg());
+        assert!(out.contains("fail \"No storage supporting the 'import' content type"));
+        assert!(out.contains("fail \"crowCloud reachable but registration failed"));
+        // Not `echo "==> Installing FRR"` anymore -- that's this hook's
+        // own former phase-header style, now `step(...)`. (The embedded
+        // seed-VM `bootstrap.sh` still uses `echo "==>"` for its own
+        // unattended cloud-init run inside the guest -- a separate
+        // script/context this change doesn't touch.)
+        assert!(!out.contains("echo \"==> Installing FRR"));
     }
 
     #[test]

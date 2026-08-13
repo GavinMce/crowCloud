@@ -76,7 +76,9 @@ pub fn render_includes_chroot_toml() -> String {
 /// a NIC missing its firmware may not show a carrier at all until the
 /// driver's been reloaded with it present.
 pub fn render_install_script() -> String {
-    let mut out = String::from("echo \"==> Installing bnx2 NIC firmware (mips-09/rv2p-09 generation)\"\nmkdir -p /lib/firmware/bnx2\n");
+    let mut out = String::from(
+        "step \"Installing bnx2 NIC firmware (mips-09/rv2p-09 generation)\"\nmkdir -p /lib/firmware/bnx2\n",
+    );
     for file in FILES {
         out.push_str(&format!(
             "base64 -d /{STAGING_DIR}/{name}.b64 > /lib/firmware/bnx2/{name}\n",
