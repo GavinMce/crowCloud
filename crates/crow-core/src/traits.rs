@@ -35,6 +35,12 @@ pub trait NetworkProvider: Send + Sync {
     async fn expose_tcp(&self, spec: TcpExposeSpec) -> Result<ExposeHandle, ProviderError>;
     async fn unexpose(&self, handle: &ExposeHandle) -> Result<(), ProviderError>;
 
+    /// Reserves an address on the uplink network and forwards all traffic
+    /// to it straight through to `spec.target_ip` -- see `ReserveIpSpec`'s
+    /// own doc comment for how this differs from `expose_tcp`.
+    async fn reserve_ip(&self, spec: ReserveIpSpec) -> Result<ReserveIpHandle, ProviderError>;
+    async fn release_ip(&self, handle: &ReserveIpHandle) -> Result<(), ProviderError>;
+
     async fn provision_cert(&self, domain: &str) -> Result<CertHandle, ProviderError>;
     async fn revoke_cert(&self, handle: &CertHandle) -> Result<(), ProviderError>;
 }

@@ -134,6 +134,8 @@ async fn apply(subnet: &PrivateSubnet, ctx: &Ctx) -> Result<Action, ReconcileErr
             name: subnet_name.clone(),
             cidr: Some(subnet.spec.cidr.clone()),
             vni: subnet.spec.vni,
+            gateway: Some(subnet.spec.gateway.clone()),
+            snat: subnet.spec.snat,
         })
         .await?;
 
@@ -332,6 +334,7 @@ mod tests {
                 vni,
                 gateway: "10.30.0.1".to_string(),
                 dns: vec![],
+                snat: false,
             },
             status: None,
         }

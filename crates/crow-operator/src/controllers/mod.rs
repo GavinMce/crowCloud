@@ -12,6 +12,8 @@ pub mod ip_pool;
 pub mod k8s_cluster;
 pub mod object_store;
 pub mod private_subnet;
+pub mod public_ip;
+mod target_resolution;
 pub mod tunnel;
 pub mod virtual_machine;
 
@@ -29,7 +31,8 @@ pub async fn run_all(
         ip_pool::run(client.clone()),
         private_subnet::run(client.clone(), db),
         tunnel::run(client.clone()),
-        exposed_endpoint::run(client, network),
+        exposed_endpoint::run(client.clone(), network.clone()),
+        public_ip::run(client, network),
     )?;
     Ok(())
 }

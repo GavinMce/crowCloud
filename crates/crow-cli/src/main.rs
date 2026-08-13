@@ -45,6 +45,9 @@ pub enum Commands {
     Provider(commands::provider::ProviderCmd),
     /// Manage IP pools
     IpPool(commands::ippool::IpPoolCmd),
+    /// Reserve upstream-LAN addresses and forward them to private-subnet
+    /// resources
+    PublicIp(commands::public_ip::PublicIpCmd),
     /// Manage private subnets (VXLAN/EVPN)
     Subnet(commands::subnet::SubnetCmd),
     /// Manage VPS tunnel endpoint

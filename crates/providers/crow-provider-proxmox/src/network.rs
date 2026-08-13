@@ -35,6 +35,15 @@ fn vnet_id(vni: u32) -> String {
     format!("v{vni:06x}")
 }
 
+/// Proxmox SDN Subnet object ids are the CIDR itself with `/` replaced by
+/// `-` (e.g. `10.30.0.0/24` -> `10.30.0.0-24`) -- confirmed against
+/// Proxmox's documented SDN Subnet object naming; needs live confirmation
+/// against a real install the same way `vnet_id`'s own format did (see
+/// `EVPN_ZONE_VRF_VNI`'s doc comment for that precedent).
+fn subnet_id(cidr: &str) -> String {
+    cidr.replace('/', "-")
+}
+
 /// Provisions this subnet's VXLAN/EVPN dataplane via Proxmox's SDN
 /// subsystem (`/cluster/sdn/...`) -- the plain per-node
 /// `/nodes/{node}/network` API (used for everything else in this crate)
@@ -54,11 +63,15 @@ fn vnet_id(vni: u32) -> String {
 /// automatically) -- see `crow-cli iso proxmox build`'s post-install
 /// hook for how the underlay OSPF config survives that.
 ///
-/// No Subnet object is created -- that's Proxmox SDN's own IPAM/DHCP/
-/// gateway feature, and this project already has independent IP
-/// bookkeeping (`IpPool`/`IpClaim`); creating one would just be unused
-/// surface area. `gateway`/`dns` stay purely informational, handed to
-/// VMs via `IpPool`/`IpClaim`, same as before.
+/// A Subnet object is only created when `spec.snat` is set (see
+/// `ensure_subnet`) -- Proxmox SDN's own IPAM/DHCP/gateway feature,
+/// deliberately unused for plain L2 subnets: this project already has
+/// independent IP bookkeeping (`IpPool`/`IpClaim`), and creating one
+/// there would just be unused surface area. `dns` stays purely
+/// informational either way, handed to VMs via `IpPool`/`IpClaim`.
+/// `gateway` does too *unless* `snat` is set, in which case it becomes
+/// the Subnet's real gateway address and Proxmox SDN's own `exit-nodes`
+/// mechanism gives it actual outbound NAT (see `ensure_exit_node`).
 ///
 /// Confirmed live against a real Proxmox VE 9.2.6 install and a real
 /// installed VyOS 1.5 route-reflector: Controller/Zone/VNet creation,
@@ -92,6 +105,21 @@ pub async fn create_network(
         });
     }
 
+    if spec.snat && spec.cidr.is_none() {
+        return Err(ProxmoxError::Api {
+            status: 400,
+            message: "snat requires cidr to be set (a gateway/NAT needs a real subnet to \
+                      route, not just a VNI)"
+                .to_string(),
+        });
+    }
+    if spec.snat && spec.gateway.is_none() {
+        return Err(ProxmoxError::Api {
+            status: 400,
+            message: "snat requires gateway to be set".to_string(),
+        });
+    }
+
     let (bgp_asn, bgp_route_reflector_ip) = match (bgp_asn, bgp_route_reflector_ip) {
         (Some(asn), Some(ip)) => (asn, ip),
         _ => {
@@ -122,6 +150,14 @@ pub async fn create_network(
         ],
     )
     .await?;
+
+    if spec.snat {
+        // Presence already validated above, before any network call.
+        let cidr = spec.cidr.as_deref().expect("checked above");
+        let gateway = spec.gateway.as_deref().expect("checked above");
+        ensure_subnet(client, &vnet, cidr, gateway).await?;
+        ensure_exit_node(client, &client.node).await?;
+    }
 
     reload_sdn(client).await?;
 
@@ -195,6 +231,86 @@ async fn ensure_zone(client: &ProxmoxClient) -> Result<(), ProxmoxError> {
         ],
     )
     .await
+}
+
+/// Gives a `PrivateSubnet` a real L3 gateway + outbound NAT, nested under
+/// its own VNet -- Proxmox SDN's own IPAM/gateway feature, deliberately
+/// unused until now (see `create_network`'s own module doc comment for
+/// why: no `PrivateSubnet` had a reason to be routable before `snat`
+/// existed). `snat=1` is what actually masquerades subnet traffic out
+/// through this node's own address on its way to the internet (still via
+/// the mgmt-VLAN's existing egress path -- see `ensure_exit_node`'s doc
+/// comment).
+async fn ensure_subnet(
+    client: &ProxmoxClient,
+    vnet: &str,
+    cidr: &str,
+    gateway: &str,
+) -> Result<(), ProxmoxError> {
+    let subnet = subnet_id(cidr);
+    if exists(
+        client,
+        &format!("/cluster/sdn/vnets/{vnet}/subnets/{subnet}"),
+    )
+    .await?
+    {
+        return Ok(());
+    }
+    info!("creating Proxmox SDN Subnet '{subnet}' (gateway {gateway}, snat) under VNet '{vnet}'");
+    create_sdn_object(
+        client,
+        &format!("/cluster/sdn/vnets/{vnet}/subnets"),
+        &[
+            ("subnet", subnet),
+            ("type", "subnet".to_string()),
+            ("gateway", gateway.to_string()),
+            ("snat", "1".to_string()),
+        ],
+    )
+    .await
+}
+
+/// Adds `node` to the EVPN zone's `exit-nodes` list, the node(s) Proxmox
+/// SDN routes a `snat`-enabled subnet's outbound traffic through. Zone-
+/// wide (every SNAT-enabled `PrivateSubnet` shares the same zone, see
+/// `EVPN_ZONE_ID`), and additive -- the first SNAT-enabled subnet on a
+/// given node makes that node an exit node; subsequent subnets on other
+/// nodes accumulate more, for HA. `exit-nodes` still only gets an exit
+/// node this fabric's own address on the mgmt VLAN, not the internet
+/// directly -- from there it's the same egress path every other mgmt-VLAN
+/// host already has (VyOS's `nat source rule 100`, see `crow-cli iso vyos
+/// build`), so this needs no new capability on VyOS's side at all.
+async fn ensure_exit_node(client: &ProxmoxClient, node: &str) -> Result<(), ProxmoxError> {
+    let zone: serde_json::Value = client
+        .get(&format!("/cluster/sdn/zones/{EVPN_ZONE_ID}"))
+        .await?;
+    let existing = zone
+        .get("exit-nodes")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let Some(updated) = merge_exit_node(existing, node) else {
+        return Ok(());
+    };
+    info!("adding '{node}' as an SDN EVPN exit-node for zone '{EVPN_ZONE_ID}' (exit-nodes: {updated})");
+    client
+        .put(
+            &format!("/cluster/sdn/zones/{EVPN_ZONE_ID}"),
+            &[("exit-nodes", updated)],
+        )
+        .await
+}
+
+/// Pure merge logic behind `ensure_exit_node`, split out so it's
+/// unit-testable without a live Proxmox client (same reasoning as
+/// `vnet_id`/`subnet_id` being plain functions rather than inlined).
+/// `None` means `node` is already present -- nothing to write.
+fn merge_exit_node(existing_csv: &str, node: &str) -> Option<String> {
+    let mut nodes: Vec<&str> = existing_csv.split(',').filter(|n| !n.is_empty()).collect();
+    if nodes.contains(&node) {
+        return None;
+    }
+    nodes.push(node);
+    Some(nodes.join(","))
 }
 
 /// `true` if a GET against `path` succeeds, `false` if the object doesn't
@@ -287,6 +403,69 @@ mod tests {
             name: "test".to_string(),
             cidr: None,
             vni: EVPN_ZONE_VRF_VNI,
+            gateway: None,
+            snat: false,
+        };
+        let err = create_network(&client, Some(65000), Some("10.10.0.1"), &spec)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProxmoxError::Api { status: 400, .. }));
+    }
+
+    #[test]
+    fn subnet_id_replaces_the_cidr_slash_with_a_dash() {
+        assert_eq!(subnet_id("10.30.0.0/24"), "10.30.0.0-24");
+    }
+
+    #[test]
+    fn merge_exit_node_adds_to_an_empty_list() {
+        assert_eq!(merge_exit_node("", "pve1"), Some("pve1".to_string()));
+    }
+
+    #[test]
+    fn merge_exit_node_appends_to_an_existing_list() {
+        assert_eq!(
+            merge_exit_node("pve1", "pve2"),
+            Some("pve1,pve2".to_string())
+        );
+    }
+
+    #[test]
+    fn merge_exit_node_is_a_noop_when_already_present() {
+        // The first SNAT-enabled subnet on a node makes it an exit node;
+        // every subsequent one on the same node must not re-add it or
+        // grow the list unboundedly.
+        assert_eq!(merge_exit_node("pve1,pve2", "pve1"), None);
+    }
+
+    #[tokio::test]
+    async fn create_network_requires_cidr_when_snat_is_set() {
+        // Never reaches the network (returns before any client call, same
+        // as the VRF-VNI-collision test above) -- a real gateway/NAT needs
+        // an actual subnet to route, not just a VNI.
+        let client = ProxmoxClient::new("https://example.invalid", "u", "s", "pve", true).unwrap();
+        let spec = NetworkSpec {
+            name: "test".to_string(),
+            cidr: None,
+            vni: 100,
+            gateway: Some("10.30.0.1".to_string()),
+            snat: true,
+        };
+        let err = create_network(&client, Some(65000), Some("10.10.0.1"), &spec)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProxmoxError::Api { status: 400, .. }));
+    }
+
+    #[tokio::test]
+    async fn create_network_requires_gateway_when_snat_is_set() {
+        let client = ProxmoxClient::new("https://example.invalid", "u", "s", "pve", true).unwrap();
+        let spec = NetworkSpec {
+            name: "test".to_string(),
+            cidr: Some("10.30.0.0/24".to_string()),
+            vni: 100,
+            gateway: None,
+            snat: true,
         };
         let err = create_network(&client, Some(65000), Some("10.10.0.1"), &spec)
             .await

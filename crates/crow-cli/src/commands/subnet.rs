@@ -43,6 +43,10 @@ pub struct CreateArgs {
     /// DNS servers, comma-separated
     #[arg(long, value_delimiter = ',')]
     pub dns: Vec<String>,
+    /// Give this subnet a real gateway and outbound internet access
+    /// (NAT) instead of staying a pure L2 segment
+    #[arg(long)]
+    pub nat: bool,
 }
 
 #[derive(Serialize)]
@@ -54,6 +58,7 @@ struct CreateSubnetBody {
     vni: u32,
     gateway: String,
     dns: Vec<String>,
+    snat: bool,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +79,7 @@ struct SubnetDetail {
     vni: u32,
     gateway: String,
     dns: Vec<String>,
+    snat: bool,
     bridge: Option<String>,
     ip_pool_ref: Option<String>,
     phase: Option<String>,
@@ -120,6 +126,7 @@ pub async fn run(cmd: SubnetCmd) -> Result<()> {
             println!("vni:               {}", s.vni);
             println!("gateway:           {}", s.gateway);
             println!("dns:               {}", s.dns.join(", "));
+            println!("nat:               {}", s.snat);
             println!("bridge:            {}", fmt_opt(&s.bridge));
             println!("ip_pool:           {}", fmt_opt(&s.ip_pool_ref));
             println!("phase:             {}", fmt_opt(&s.phase));
@@ -134,6 +141,7 @@ pub async fn run(cmd: SubnetCmd) -> Result<()> {
                 vni: args.vni,
                 gateway: args.gateway,
                 dns: args.dns,
+                snat: args.nat,
             };
             let s: SubnetDetail = client.post("/api/v1/private-subnets", &body).await?;
             println!("Created private subnet '{}'", s.name);

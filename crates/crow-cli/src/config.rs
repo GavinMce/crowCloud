@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::iso::fabric::FabricConfig;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -21,6 +21,13 @@ pub struct Config {
     /// Set once via `crow iso fabric-configure`, read automatically by
     /// every ISO build command afterwards (see `iso::fabric`).
     pub fabric: Option<FabricConfig>,
+    /// VyOS's own WireGuard server private key -- generated once on
+    /// first `iso vyos build` with WireGuard enabled, then reused for
+    /// every subsequent build/rebuild so re-running it doesn't mint a
+    /// new server key and silently invalidate every admin's already-
+    /// distributed client `.conf` (same reasoning as `fleet_secret`
+    /// above, applied to a different secret).
+    pub wireguard_server_private_key: Option<String>,
 }
 
 impl Config {
@@ -61,5 +68,21 @@ impl Config {
         cfg.fleet_secret = Some(secret.clone());
         cfg.save()?;
         Ok(secret)
+    }
+
+    /// Returns VyOS's cached WireGuard server private key, generating
+    /// one (via `wg genkey`) on first use. Reused on every subsequent
+    /// `iso vyos build` for the same reason `fleet_secret_or_generate`
+    /// caches its own value -- see this field's own doc comment.
+    pub fn wireguard_server_key_or_generate() -> Result<String> {
+        let mut cfg = Self::load()?;
+        if let Some(key) = &cfg.wireguard_server_private_key {
+            return Ok(key.clone());
+        }
+        let key = crate::iso::wireguard::genkey()
+            .context("generating VyOS's WireGuard server private key")?;
+        cfg.wireguard_server_private_key = Some(key.clone());
+        cfg.save()?;
+        Ok(key)
     }
 }

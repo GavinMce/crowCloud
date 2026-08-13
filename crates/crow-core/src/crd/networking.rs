@@ -113,6 +113,14 @@ pub struct PrivateSubnetSpec {
     pub vni: u32,
     pub gateway: String,
     pub dns: Vec<String>,
+    /// Opt-in real L3 gateway + outbound NAT for this subnet (Proxmox
+    /// SDN's own EVPN zone `Subnet` object + zone `exit-nodes`, for the
+    /// Proxmox provider) instead of staying pure L2. `false` by default:
+    /// until now `gateway` above was purely informational (handed to VMs
+    /// via `IpPool`/`IpClaim`, nothing ever actually routed through it),
+    /// and most subnets so far have had no reason to reach the internet.
+    #[serde(default)]
+    pub snat: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, Default)]
@@ -222,6 +230,53 @@ pub struct ExposedEndpointStatus {
     pub phase: Option<String>,
     pub public_url: Option<String>,
     pub cert_expiry: Option<String>,
+}
+
+// --- PublicIp ---
+
+/// Reserves an address on the network `NetworkProvider`'s uplink sits on
+/// and forwards *all* traffic to it straight through to one private-
+/// subnet resource -- no ports, no domains, no TLS. "Public" here means
+/// "on the uplink network, not the private fabric" (the same sense Azure
+/// uses it in for on-prem/private-perimeter deployments), not a guarantee
+/// of internet routability -- that depends entirely on what's upstream of
+/// the uplink itself.
+///
+/// Deliberately not an `ExposedEndpoint`: that's a one-port-at-a-time
+/// HTTP/TCP/UDP exposure model built around a single shared address.
+/// This is a different NAT shape entirely -- full address-to-address
+/// (1:1) translation, reusing `ExposedTargetKind`/target resolution but
+/// nothing else from it.
+#[derive(CustomResource, Serialize, Deserialize, Debug, Clone, JsonSchema)]
+#[kube(
+    group = "crow.cloud",
+    version = "v1alpha1",
+    kind = "PublicIp",
+    namespaced,
+    status = "PublicIpStatus",
+    shortname = "pubip",
+    printcolumn = r#"{"name":"Address","type":"string","jsonPath":".spec.address"}"#,
+    printcolumn = r#"{"name":"Target","type":"string","jsonPath":".spec.targetName"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicIpSpec {
+    /// Secondary address to bind on the uplink interface -- must fall
+    /// within the uplink network's own subnet.
+    pub address: String,
+    pub prefix: u8,
+    /// Only `VirtualMachine` resolves an IP today -- same limitation
+    /// `ExposedEndpoint` already has.
+    pub target_kind: ExposedTargetKind,
+    pub target_name: String,
+    pub label: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicIpStatus {
+    pub phase: Option<String>,
+    pub message: Option<String>,
 }
 
 // --- CustomDomain ---

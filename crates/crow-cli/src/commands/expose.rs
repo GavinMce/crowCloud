@@ -100,8 +100,9 @@ fn fmt_opt(v: &Option<String>) -> &str {
 /// use their exact Rust variant name on the wire (e.g. `"VirtualMachine"`,
 /// `"Http"`) -- this maps the natural lowercase CLI spelling to that, so a
 /// user typing `--type http` doesn't get a confusing 400 for a casing
-/// mismatch they'd have no way to guess.
-fn canonical_target_kind(s: &str) -> Result<&'static str> {
+/// mismatch they'd have no way to guess. `pub(crate)`: `commands::public_ip`
+/// reuses this directly rather than re-deriving the same mapping.
+pub(crate) fn canonical_target_kind(s: &str) -> Result<&'static str> {
     Ok(match s.to_ascii_lowercase().as_str() {
         "vm" | "virtualmachine" => "VirtualMachine",
         "k8s" | "k8scluster" => "K8sCluster",
