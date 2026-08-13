@@ -177,9 +177,19 @@ pub struct ExposedEndpointSpec {
     pub target_kind: ExposedTargetKind,
     pub target_name: String,
     pub expose_type: ExposeType,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
     pub port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub public_port: Option<u16>,
+    /// Confirmed live: the CRD's generated OpenAPI schema for this field
+    /// constrains it to an enum of `ExposeProtocol`'s variant names --
+    /// sending the literal JSON `null` a bare `Option<T>` produces when
+    /// unset gets rejected outright ("Unsupported value: null"), since
+    /// that's not one of the enum's allowed values. Omitting the field
+    /// entirely when unset (matching how it's actually optional) sidesteps
+    /// this instead of fighting the generated schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<ExposeProtocol>,
     pub tls: bool,
 }
