@@ -175,6 +175,10 @@ Ingress with host-based routing instead of the default NodePort exposure
 (requires your own ingress controller and DNS). `CROW_VERSION` pins a
 specific released version instead of `latest`.
 
+Starting from bare metal instead of an existing VM — building VyOS/Proxmox
+installer images, flashing them, and bringing up the whole fabric plus
+crowCloud itself — see [`docs/hardware-setup.md`](docs/hardware-setup.md).
+
 ### Deploy with Helm
 
 If you already have a Kubernetes cluster and just want the chart (skipping

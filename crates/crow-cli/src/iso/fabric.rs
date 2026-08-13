@@ -52,4 +52,11 @@ pub struct FabricConfig {
     /// kept here anyway since it's a fabric-wide network design
     /// decision, not a per-host one.
     pub dns_servers: Vec<String>,
+    /// Subnet for admin WireGuard VPN peers (distinct from underlay/mgmt).
+    /// Optional, like `bgp_peer_password` -- not every fleet wants admin
+    /// VPN access configured. Only consumed by VyOS's own WireGuard
+    /// server config, kept here since it's a fabric-wide allocation
+    /// decision like the others, not a per-build one.
+    pub wireguard_network: Option<String>,
+    pub wireguard_network_prefix: Option<u8>,
 }

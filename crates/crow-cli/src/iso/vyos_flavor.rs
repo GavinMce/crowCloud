@@ -1,12 +1,19 @@
-/// Bakes fabric config directly into a custom VyOS image, so a
-/// freshly-flashed box configures itself on boot with zero manual
-/// `configure`/`set` interaction -- as opposed to `iso::vyos`'s
-/// `render_configure_script`, which still needs `iso vyos apply` (or a
-/// hand-run session) against an already-installed device.
+/// Bakes fabric-init tooling directly into a custom VyOS image, so a
+/// freshly-flashed box has everything it needs (bnx2 firmware, Caddy,
+/// the interface-detecting fabric-config script) on disk with no network
+/// access required -- as opposed to `iso::vyos`'s `render_configure_script`,
+/// which still needs `iso vyos apply` (or a hand-run session) against an
+/// already-installed device.
 ///
 /// Doesn't solve the install step itself -- VyOS has no unattended
-/// install mode (see #63/#66 issue history) -- but removes the
-/// post-install config step entirely.
+/// install mode (see #63/#66 issue history) -- and, as of this revision,
+/// doesn't trigger the fabric-init script automatically either: an
+/// earlier version fired it via a `cron.d` `@reboot` entry, but that
+/// didn't reliably trigger in practice. The script is baked into the
+/// image at `/usr/local/bin/crowcloud-fabric-init.sh` (see
+/// `render_fabric_init_script`) and meant to be run by hand over SSH
+/// once the box is up, the same way `crow-cli iso proxmox build`'s
+/// post-install hook now is.
 ///
 /// Built via VyOS's own `vyos-build` toolchain (Docker, `--privileged`
 /// required). Confirmed against `vyos-build`'s actual source
@@ -23,22 +30,11 @@
 /// tree wholesale -- so baking a file at `/config/scripts/
 /// vyos-postconfig-bootup.script` via `includes_chroot` would silently
 /// never reach the installed system. Baking into a normal squashfs path
-/// (`/usr/local/bin/`, `/etc/cron.d/`) instead sidesteps that entirely,
-/// since the installer copies the whole base OS image wholesale.
+/// (`/usr/local/bin/`) instead sidesteps that entirely, since the
+/// installer copies the whole base OS image wholesale.
 ///
-/// Uses `cron.d`'s `@reboot` instead of a systemd unit to trigger the
-/// script -- deliberately avoids the systemd unit-enablement question
-/// (whether a non-symlinked file placed directly under
-/// `<target>.wants/` is honored the same as a real `systemctl enable`
-/// symlink is not something this was able to confirm against a primary
-/// source before shipping). `cron.d` files need no separate enable step
-/// at all -- cron reads `/etc/cron.d/*` directly -- at the cost of
-/// depending on cron already running by the time reboot fires, which
-/// is standard on a Debian-based system but, like everything else
-/// VyOS-specific in this session, worth confirming live once this is
-/// actually built and booted.
-///
-/// Interface roles are detected live at boot rather than pre-specified
+/// Interface roles are detected live at boot (well, at whenever the
+/// script is actually run) rather than pre-specified
 /// at build time (no PCI address, MAC, or interface name baked in at
 /// all): every physical interface with an active link is a candidate,
 /// and whichever one answers DHCP (or, if the uplink is static, ARPs
@@ -77,9 +73,9 @@ const DETECT_TRUNK_AND_UPLINK: &str = r#"detect_trunk_and_uplink() {
 
     # Poll for link state to settle rather than a single fixed sleep --
     # confirmed live: a flat 10s sleep was enough for a manual re-run on
-    # an already-idle system, but not on an actual cold boot via
-    # @reboot, where kernel init/other services/disk I/O all compete for
-    # the same window. bnx2 (Broadcom NetXtreme II) autonegotiation is
+    # an already-idle system, but not right after a cold boot, where
+    # kernel init/other services/disk I/O all compete for the same
+    # window. bnx2 (Broadcom NetXtreme II) autonegotiation is
     # also slower than more modern chips, and the driver's just been
     # reloaded (to pick up firmware, see bnx2_firmware) immediately
     # before this runs, adding further to the settle time needed -- a
@@ -150,12 +146,15 @@ const DETECT_TRUNK_AND_UPLINK: &str = r#"detect_trunk_and_uplink() {
 }"#;
 
 /// The script baked into the image at `/usr/local/bin/crowcloud-fabric-init.sh`,
-/// triggered on every boot via a `cron.d` `@reboot` entry (see
-/// `render_cron_entry`). Detects the trunk/uplink interfaces live (see
-/// module doc comment), then applies the exact same `set` commands
-/// `iso vyos apply` would push over SSH -- reuses `render_configure_script`
-/// directly rather than re-deriving the fabric config in bash, so the
-/// two mechanisms can't drift apart.
+/// meant to be run by hand over SSH once the box is up (see module doc
+/// comment). Detects the trunk/uplink interfaces live (see module doc
+/// comment), then applies the exact same `set` commands `iso vyos apply`
+/// would push over SSH -- reuses `render_configure_script` directly
+/// rather than re-deriving the fabric config in bash, so the two
+/// mechanisms can't drift apart. Uses the shared `step`/`fail` framework
+/// (see `step_output`) so a session watching this run over SSH gets
+/// numbered progress and, on failure, an exact list of what completed
+/// beforehand.
 pub fn render_fabric_init_script(cfg: &VyosFlavorConfig) -> String {
     let shell_cfg = VyosBuildConfig {
         trunk_interface: "${TRUNK_IF}".to_string(),
@@ -176,15 +175,17 @@ set -euo pipefail
 
 UPLINK_GATEWAY_PROBE="{uplink_gateway_probe}"
 
+{step_framework}
 {install_bnx2_firmware}
 
 {detect_trunk_and_uplink}
 
+step "Detecting trunk/uplink interfaces"
 read -r TRUNK_IF UPLINK_IF < <(detect_trunk_and_uplink) || {{
-    echo "Interface detection failed -- refusing to apply a partial fabric config" >&2
-    exit 1
+    fail "Interface detection failed -- refusing to apply a partial fabric config"
 }}
 
+step "Applying VyOS fabric configuration"
 vbash <<VBASH
 source /opt/vyatta/etc/functions/script-template
 configure
@@ -192,12 +193,15 @@ configure
 VBASH
 
 {install_caddy}
-"#,
+
+{on_success}"#,
         uplink_gateway_probe = uplink_gateway_probe,
+        step_framework = crate::iso::step_output::render_step_framework(),
         install_bnx2_firmware = crate::iso::bnx2_firmware::render_install_script(),
         detect_trunk_and_uplink = DETECT_TRUNK_AND_UPLINK,
         set_commands = set_commands,
         install_caddy = render_install_caddy(),
+        on_success = crate::iso::step_output::render_on_success_call(),
     )
 }
 
@@ -208,13 +212,12 @@ VBASH
 /// confirmed live: the apt-based install (Caddy's own official Cloudsmith
 /// instructions) hit real breakage (unavailable keyring packages, then a
 /// DNS/connectivity gap at exactly the moment first boot needed to reach
-/// Cloudsmith). Runs on every `@reboot`, same as the rest of this script
-/// -- idempotent (`dpkg -i` no-ops if already installed, and the base
+/// Cloudsmith). Idempotent (`dpkg -i` no-ops if already installed, and the base
 /// Caddyfile write never touches `sites/*.caddy`, which is only ever
 /// managed by the operator over SSH afterward).
 fn render_install_caddy() -> String {
     format!(
-        r#"echo "==> Installing Caddy (HTTP exposure path)"
+        r#"step "Installing Caddy (HTTP exposure path)"
 {install_caddy_package}
 
 mkdir -p /etc/caddy/sites
@@ -230,23 +233,6 @@ systemctl restart caddy"#,
     )
 }
 
-/// `/etc/cron.d/crowcloud-fabric-init` -- no `systemctl enable`
-/// equivalent needed, cron.d files are read directly with no separate
-/// enable step. Logs to a file since cron's own mail-based error
-/// reporting isn't configured on a fresh box.
-pub fn render_cron_entry() -> String {
-    // `bash` explicitly, not a direct exec -- confirmed against
-    // vyos-build's actual source (`build-vyos-image`'s `includes_chroot`
-    // handling, a plain `open(file_path, 'w')` with no `chmod`): there is
-    // no way to mark this file executable via the flavor schema, so the
-    // script always lands world-readable but not executable. A direct
-    // exec (by cron or by hand) fails with "Permission denied" regardless
-    // of file content; invoking it via `bash` sidesteps needing the
-    // execute bit at all.
-    "@reboot root bash /usr/local/bin/crowcloud-fabric-init.sh >> /var/log/crowcloud-fabric-init.log 2>&1\n"
-        .to_string()
-}
-
 fn toml_multiline_string(s: &str) -> String {
     // TOML triple-quoted strings can't contain the delimiter itself;
     // none of our generated content does, but guard against a future
@@ -259,8 +245,15 @@ fn toml_multiline_string(s: &str) -> String {
 }
 
 /// The `vyos-build` flavor TOML consumed by `build-vyos-image`. `image_format
-/// = "iso"` matches the stock `generic.toml` flavor; the two
-/// `[[includes_chroot]]` entries are the only customization.
+/// = "iso"` matches the stock `generic.toml` flavor; the `[[includes_chroot]]`
+/// entry bakes the fabric-init script onto the image at
+/// `/usr/local/bin/crowcloud-fabric-init.sh` -- nothing triggers it
+/// automatically (no `cron.d` entry, no systemd unit; see module doc
+/// comment), it's meant to be run by hand over SSH after install.
+/// `includes_chroot` writes files with no execute bit (confirmed against
+/// `vyos-build`'s source -- a plain `open(file_path, 'w')`, no `chmod`),
+/// so it must be invoked as `bash crowcloud-fabric-init.sh`, not
+/// `./crowcloud-fabric-init.sh`.
 pub fn render_flavor_toml(cfg: &VyosFlavorConfig) -> String {
     format!(
         r#"# Generated by `crow-cli iso vyos flavor` -- see #63.
@@ -270,14 +263,9 @@ image_format = "iso"
 path = "usr/local/bin/crowcloud-fabric-init.sh"
 data = {script_data}
 
-[[includes_chroot]]
-path = "etc/cron.d/crowcloud-fabric-init"
-data = {cron_data}
-
 {bnx2_firmware}
 {caddy_package}"#,
         script_data = toml_multiline_string(&render_fabric_init_script(cfg)),
-        cron_data = toml_multiline_string(&render_cron_entry()),
         bnx2_firmware = crate::iso::bnx2_firmware::render_includes_chroot_toml(),
         caddy_package = crate::iso::caddy_package::render_includes_chroot_toml(),
     )
@@ -319,6 +307,11 @@ mod tests {
                 allow_password_auth: false,
                 crow_api_mgmt_ip: None,
                 crow_api_mgmt_port: None,
+                crow_frontend_mgmt_port: None,
+                wireguard_port: None,
+                wireguard_address: None,
+                wireguard_address_prefix: None,
+                wireguard_private_key: None,
             },
         }
     }
@@ -370,11 +363,11 @@ mod tests {
     #[test]
     fn polls_for_link_state_instead_of_a_single_fixed_sleep() {
         // Confirmed live: a flat sleep long enough for a manual re-run on
-        // an idle system still wasn't enough on an actual cold boot via
-        // @reboot, where kernel init/other services/disk I/O all compete
-        // for the same window -- a bounded poll adapts to however long
-        // that actually takes instead of a magic number that keeps
-        // needing to be bumped under different boot conditions.
+        // an idle system still wasn't enough right after a cold boot,
+        // where kernel init/other services/disk I/O all compete for the
+        // same window -- a bounded poll adapts to however long that
+        // actually takes instead of a magic number that keeps needing to
+        // be bumped under different boot conditions.
         let out = render_fabric_init_script(&cfg());
         assert!(!out.contains("sleep 10"));
         assert!(out.contains("max_wait=60"));
@@ -393,13 +386,6 @@ mod tests {
     }
 
     #[test]
-    fn cron_entry_needs_no_separate_enable_step() {
-        let out = render_cron_entry();
-        assert!(out.starts_with("@reboot root"));
-        assert!(out.contains("crowcloud-fabric-init.sh"));
-    }
-
-    #[test]
     fn fabric_init_script_installs_caddy_for_the_http_exposure_path() {
         let out = render_fabric_init_script(&cfg());
         // Baked-in .deb via dpkg, not apt -- confirmed live, the apt-based
@@ -409,22 +395,71 @@ mod tests {
         assert!(!out.contains("apt-get install -y caddy"));
         assert!(out.contains("import sites/*.caddy"));
         assert!(out.contains("systemctl enable caddy"));
-        // Idempotent across every @reboot re-run, not just first boot --
-        // must not reinstall/reconfigure once already present.
+        // Idempotent across every re-run, not just the first one -- must
+        // not reinstall/reconfigure once already present.
         assert!(out.contains("if ! command -v caddy"));
     }
 
     #[test]
-    fn flavor_toml_embeds_both_files_as_inline_data_not_file_references() {
+    fn flavor_toml_embeds_the_script_as_inline_data_not_a_file_reference() {
         // Confirmed against vyos-build's actual source
         // (build-vyos-image): `includes_chroot` entries are written via
         // `open(file_path, 'w').write(i["data"])` -- `data` must be the
         // literal content, not a path.
         let out = render_flavor_toml(&cfg());
         assert!(out.contains(r#"path = "usr/local/bin/crowcloud-fabric-init.sh""#));
-        assert!(out.contains(r#"path = "etc/cron.d/crowcloud-fabric-init""#));
         assert!(out.contains("image_format = \"iso\""));
         assert!(out.contains("detect_trunk_and_uplink"));
-        assert!(out.contains("@reboot root"));
+    }
+
+    #[test]
+    fn flavor_toml_bakes_in_no_automatic_trigger() {
+        // Neither a cron.d @reboot entry nor a systemd unit -- the script
+        // is meant to be run by hand over SSH (see module doc comment),
+        // not fired automatically at boot.
+        let out = render_flavor_toml(&cfg());
+        assert!(!out.contains("cron.d"));
+        assert!(!out.contains("@reboot"));
+    }
+
+    #[test]
+    fn fabric_init_script_is_syntactically_valid_bash() {
+        // `bash -n` parses without executing -- catches quoting/brace
+        // mistakes from the step-framework interpolation that plain
+        // substring assertions elsewhere in this file wouldn't. Note the
+        // embedded `vbash <<VBASH ... VBASH` heredoc is opaque to `-n`
+        // (it's just a string literal as far as the outer script's own
+        // syntax is concerned), so this doesn't validate the VyOS `set`
+        // commands themselves -- only the surrounding bash.
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let out = render_fabric_init_script(&cfg());
+        let mut child = Command::new("bash")
+            .arg("-n")
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("bash must be on PATH to run this test");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(out.as_bytes())
+            .unwrap();
+        let result = child.wait_with_output().unwrap();
+        assert!(
+            result.status.success(),
+            "bash -n reported a syntax error:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[test]
+    fn fabric_init_script_reports_numbered_steps_and_a_final_summary() {
+        let out = render_fabric_init_script(&cfg());
+        assert!(out.contains("step \"Detecting trunk/uplink interfaces\""));
+        assert!(out.contains("step \"Applying VyOS fabric configuration\""));
+        assert!(out.contains("step \"Installing Caddy (HTTP exposure path)\""));
+        assert!(out.trim_end().ends_with("on_success"));
     }
 }

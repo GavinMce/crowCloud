@@ -33,8 +33,8 @@ pub fn render_includes_chroot_toml() -> String {
 
 /// Bash snippet decoding the staged `.deb` and installing it with `dpkg`
 /// directly -- no `apt-get`/network involved at all for the package
-/// itself. Safe to run on every `@reboot`: `dpkg -i` on an
-/// already-installed version at the same package/version is a no-op.
+/// itself. Safe to re-run: `dpkg -i` on an already-installed version at
+/// the same package/version is a no-op.
 pub fn render_install_script() -> String {
     format!(
         "if ! command -v caddy >/dev/null 2>&1; then\n    \

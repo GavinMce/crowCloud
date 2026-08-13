@@ -11,6 +11,7 @@ mod private_subnets;
 mod projects;
 mod provider_nodes;
 mod providers;
+mod public_ips;
 mod resources;
 
 pub fn router() -> Router<AppState> {
@@ -22,6 +23,7 @@ pub fn router() -> Router<AppState> {
         .nest("/ip-pools", ip_pools::router())
         .nest("/private-subnets", private_subnets::router())
         .nest("/expose", expose::router())
+        .nest("/public-ips", public_ips::router())
         .nest("/domains", domains::router())
         .nest("/fleet-secrets", fleet_secrets::router())
         .nest("/internal", host_bootstrap::router())

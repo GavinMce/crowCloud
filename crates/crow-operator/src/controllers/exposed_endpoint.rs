@@ -1,4 +1,4 @@
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use futures::StreamExt;
 use kube::api::{Api, Patch, PatchParams};
@@ -11,17 +11,14 @@ use kube::{
 };
 
 use crow_core::{
-    crd::{
-        networking::{
-            ExposeProtocol, ExposeType, ExposedEndpoint, ExposedEndpointStatus, ExposedTargetKind,
-        },
-        resources::VirtualMachine,
-    },
+    crd::networking::{ExposeProtocol, ExposeType, ExposedEndpoint, ExposedEndpointStatus},
     traits::NetworkProvider,
     types::{Protocol, TcpExposeSpec},
 };
 use crow_provider_registry::VM_NAMESPACE;
 use crow_provider_vyos::VyosNetworkProvider;
+
+use super::target_resolution::{resolve_target_ip, TargetResolutionError};
 
 const FINALIZER: &str = "exposedendpoint.crow.cloud/finalizer";
 const READY: &str = "Ready";
@@ -29,10 +26,10 @@ const PENDING: &str = "Pending";
 
 #[derive(Debug, thiserror::Error)]
 enum ReconcileError {
-    #[error("target kind {0:?} isn't supported yet -- only VirtualMachine is wired up so far")]
-    UnsupportedTargetKind(String),
     #[error("ExposeType::Http requires spec.domain to be set -- subdomain routing has no meaning without one")]
     HttpRequiresDomain,
+    #[error(transparent)]
+    TargetResolution(#[from] TargetResolutionError),
     #[error(transparent)]
     Provider(#[from] crow_core::ProviderError),
     #[error(transparent)]
@@ -92,28 +89,6 @@ fn error_policy(
     Action::requeue(Duration::from_secs(30))
 }
 
-/// Resolves `target_kind`/`target_name` to the target's private IP.
-/// `VirtualMachine` is the only kind wired up so far -- `K8sCluster`/
-/// `ObjectStore`/`Database` all have no-op stub controllers today (see
-/// `main.rs`'s own `install_crds` comment), so there's no status field to
-/// resolve an IP from for them yet regardless.
-async fn resolve_target_ip(
-    ctx: &Ctx,
-    kind: &ExposedTargetKind,
-    name: &str,
-) -> Result<Option<IpAddr>, ReconcileError> {
-    match kind {
-        ExposedTargetKind::VirtualMachine => {
-            let api: Api<VirtualMachine> = Api::namespaced(ctx.client.clone(), VM_NAMESPACE);
-            let Some(vm) = api.get_opt(name).await? else {
-                return Ok(None);
-            };
-            Ok(vm.status.and_then(|s| s.ip).and_then(|ip| ip.parse().ok()))
-        }
-        other => Err(ReconcileError::UnsupportedTargetKind(format!("{other:?}"))),
-    }
-}
-
 fn to_protocol(expose_type: &ExposeType, protocol: &Option<ExposeProtocol>) -> Protocol {
     match protocol {
         Some(ExposeProtocol::Tcp) => Protocol::Tcp,
@@ -136,8 +111,12 @@ async fn apply(endpoint: &ExposedEndpoint, ctx: &Ctx) -> Result<Action, Reconcil
         return Err(ReconcileError::HttpRequiresDomain);
     }
 
-    let Some(target_ip) =
-        resolve_target_ip(ctx, &endpoint.spec.target_kind, &endpoint.spec.target_name).await?
+    let Some(target_ip) = resolve_target_ip(
+        &ctx.client,
+        &endpoint.spec.target_kind,
+        &endpoint.spec.target_name,
+    )
+    .await?
     else {
         // Target doesn't exist yet, or exists but has no IP assigned yet
         // (e.g. its IpClaim hasn't bound) -- wait rather than error, same

@@ -10,10 +10,11 @@ use tracing_subscriber::EnvFilter;
 mod controllers;
 
 /// Installs the CRDs this operator reconciles. `VirtualMachine`, the IPAM
-/// trio (`IpPool`/`IpClaim`/`PrivateSubnet`), and `ExposedEndpoint` (the
-/// TCP/UDP shared-IP:port path only, see `controllers::exposed_endpoint`)
-/// are installed — K8sCluster/Database/ObjectStore/TunnelEndpoint/
-/// CustomDomain stay out of scope until their controllers are implemented.
+/// trio (`IpPool`/`IpClaim`/`PrivateSubnet`), `ExposedEndpoint` (the
+/// TCP/UDP shared-IP:port path only, see `controllers::exposed_endpoint`),
+/// and `PublicIp` (see `controllers::public_ip`) are installed —
+/// K8sCluster/Database/ObjectStore/TunnelEndpoint/CustomDomain stay out of
+/// scope until their controllers are implemented.
 async fn install_crds(client: &Client) -> anyhow::Result<()> {
     let crds: Api<CustomResourceDefinition> = Api::all(client.clone());
     let pp = PatchParams::apply("crow-operator").force();
@@ -24,6 +25,7 @@ async fn install_crds(client: &Client) -> anyhow::Result<()> {
         crow_core::crd::networking::IpClaim::crd(),
         crow_core::crd::networking::PrivateSubnet::crd(),
         crow_core::crd::networking::ExposedEndpoint::crd(),
+        crow_core::crd::networking::PublicIp::crd(),
     ] {
         let name = crd
             .metadata
@@ -63,10 +65,10 @@ async fn ensure_namespace(client: &Client) -> anyhow::Result<()> {
 /// operator-level config (env vars), not a per-CR reference or a Postgres
 /// `providers` row.
 ///
-/// `None` when unconfigured -- `ExposedEndpoint` is optional functionality
-/// (VM provisioning and IP pools don't need VyOS at all), so a fabric
-/// that hasn't set these up yet must not crash the whole operator over
-/// it. `controllers::run_all` runs `exposed_endpoint` as a no-op stub in
+/// `None` when unconfigured -- `ExposedEndpoint`/`PublicIp` are optional
+/// functionality (VM provisioning and IP pools don't need VyOS at all),
+/// so a fabric that hasn't set these up yet must not crash the whole
+/// operator over it. `controllers::run_all` runs both as no-op stubs in
 /// that case, same as the other not-yet-configured/implemented
 /// controllers.
 fn build_vyos_network_provider() -> Option<crow_provider_vyos::VyosNetworkProvider> {
@@ -78,7 +80,7 @@ fn build_vyos_network_provider() -> Option<crow_provider_vyos::VyosNetworkProvid
     else {
         tracing::info!(
             "VYOS_HOST/VYOS_SSH_KEY_PATH/VYOS_UPLINK_INTERFACE not fully set -- \
-             ExposedEndpoint reconciliation is disabled for this operator instance"
+             ExposedEndpoint/PublicIp reconciliation is disabled for this operator instance"
         );
         return None;
     };

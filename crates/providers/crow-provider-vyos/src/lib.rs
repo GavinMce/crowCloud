@@ -16,6 +16,13 @@
 /// unimplemented -- Caddy issues/renews certs automatically as a side
 /// effect of a site being configured, and nothing calls these two methods
 /// yet regardless.
+///
+/// `reserve_ip`/`release_ip` (backing `crd::networking::PublicIp`) are a
+/// third, different shape again: a *secondary* address bound directly on
+/// the uplink interface (the primary one, used for everything above,
+/// stays untouched), forwarding every port to one private target via a
+/// single address-only NAT rule -- no port fields at all, unlike
+/// `expose_tcp`'s one-port-at-a-time rules.
 use async_trait::async_trait;
 use crow_core::{traits::NetworkProvider, types::*, ProviderError};
 use crow_vyos_ssh::VyosSshConfig;
@@ -59,10 +66,25 @@ impl VyosNetworkProvider {
 /// `unexpose` can reconstruct the exact same rule number from the handle's
 /// `public_port` alone with no separate state to keep in sync.
 ///
-/// Offset by 1000 to stay well clear of rule 100, already used by the
-/// fabric's own egress source-NAT rule (see `iso::vyos::render_configure_script`).
+/// Offset by 1000 to stay well clear of rule 100 (the fabric's own egress
+/// source-NAT rule, see `iso::vyos::render_configure_script`) and rules
+/// 200/201 (the control-plane API/frontend forwarding rules, same
+/// module) -- see `reserve_ip_rule_number` for the next range along.
 fn nat_rule_number(public_port: u16) -> u32 {
     1000 + (public_port as u32 % 8000)
+}
+
+/// Deterministic NAT rule number for a `PublicIp`'s static 1:1 forward,
+/// derived from the reserved address's own last octet -- same reasoning
+/// as `nat_rule_number` (no separate state to keep in sync between
+/// `reserve_ip` and `release_ip`). Offset by 9000, clear of every rule
+/// range above (100, 200-201, 1000-8999).
+fn reserve_ip_rule_number(address: &std::net::IpAddr) -> u32 {
+    let last_octet = match address {
+        std::net::IpAddr::V4(v4) => v4.octets()[3],
+        std::net::IpAddr::V6(v6) => v6.octets()[15],
+    };
+    9000 + last_octet as u32
 }
 
 fn protocol_str(protocol: &Protocol) -> &'static str {
@@ -174,6 +196,62 @@ impl NetworkProvider for VyosNetworkProvider {
             .map_err(|e| ProviderError::Other(format!("removing NAT rule from VyOS: {e:#}")))
     }
 
+    /// Reserves `spec.address` on the uplink interface (a secondary
+    /// address -- the interface keeps its primary one too) and forwards
+    /// *all* traffic to it straight through to `spec.target_ip`, no
+    /// ports involved. Both the address bind and the NAT rule go over
+    /// one SSH session (same as `expose_tcp`).
+    async fn reserve_ip(&self, spec: ReserveIpSpec) -> Result<ReserveIpHandle, ProviderError> {
+        let rule = reserve_ip_rule_number(&spec.address);
+        let commands = vec![
+            format!(
+                "set interfaces ethernet {} address '{}/{}'",
+                self.uplink_interface, spec.address, spec.prefix
+            ),
+            format!(
+                "set nat destination rule {rule} description 'crowcloud-reserved-ip-{}'",
+                spec.address
+            ),
+            format!(
+                "set nat destination rule {rule} inbound-interface name '{}'",
+                self.uplink_interface
+            ),
+            format!(
+                "set nat destination rule {rule} destination address '{}'",
+                spec.address
+            ),
+            format!(
+                "set nat destination rule {rule} translation address '{}'",
+                spec.target_ip
+            ),
+        ];
+
+        crow_vyos_ssh::apply_commands(&self.ssh_config(), &commands)
+            .await
+            .map_err(|e| ProviderError::Other(format!("reserving IP on VyOS: {e:#}")))?;
+
+        Ok(ReserveIpHandle {
+            provider_id: format!("static-nat-rule-{rule}"),
+            address: spec.address,
+            prefix: spec.prefix,
+        })
+    }
+
+    async fn release_ip(&self, handle: &ReserveIpHandle) -> Result<(), ProviderError> {
+        let rule = reserve_ip_rule_number(&handle.address);
+        let commands = vec![
+            format!("delete nat destination rule {rule}"),
+            format!(
+                "delete interfaces ethernet {} address '{}/{}'",
+                self.uplink_interface, handle.address, handle.prefix
+            ),
+        ];
+
+        crow_vyos_ssh::apply_commands(&self.ssh_config(), &commands)
+            .await
+            .map_err(|e| ProviderError::Other(format!("releasing reserved IP on VyOS: {e:#}")))
+    }
+
     async fn provision_cert(&self, _domain: &str) -> Result<CertHandle, ProviderError> {
         Err(ProviderError::Other(
             "provision_cert (ACME via Caddy) isn't implemented yet -- \
@@ -211,5 +289,21 @@ mod tests {
         assert_eq!(protocol_str(&Protocol::Tcp), "tcp");
         assert_eq!(protocol_str(&Protocol::Udp), "udp");
         assert_eq!(protocol_str(&Protocol::TcpUdp), "tcp_udp");
+    }
+
+    #[test]
+    fn reserve_ip_rule_number_stays_clear_of_every_other_range() {
+        let addr: std::net::IpAddr = "10.0.202.50".parse().unwrap();
+        let rule = reserve_ip_rule_number(&addr);
+        assert_eq!(rule, 9050);
+        assert_ne!(rule, 100);
+        assert!(!(200..=201).contains(&rule));
+        assert!(!(1000..=8999).contains(&rule));
+    }
+
+    #[test]
+    fn reserve_ip_rule_number_is_deterministic_for_the_same_address() {
+        let addr: std::net::IpAddr = "10.0.202.50".parse().unwrap();
+        assert_eq!(reserve_ip_rule_number(&addr), reserve_ip_rule_number(&addr));
     }
 }

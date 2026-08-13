@@ -73,14 +73,41 @@ pub struct VyosBuildConfig {
     /// `crow_api_mgmt_port` are set, bakes in a NAT destination rule
     /// forwarding that same port on the uplink straight to it. This is
     /// specifically for reaching the control plane itself from the
-    /// upstream LAN (e.g. during bootstrap, before it's up enough to
-    /// configure an `ExposedEndpoint` for itself) -- a separate,
-    /// bootstrap-level concern from `crow-provider-vyos`'s NAT rules,
-    /// which the operator manages per-`ExposedEndpoint` at runtime.
-    /// Optional: a fabric with no crowCloud instance yet has nothing to
-    /// forward to.
+    /// upstream LAN -- both for admin/CLI access on an ongoing basis (the
+    /// control plane has no other route to the LAN otherwise: it lives on
+    /// the mgmt VLAN, which is fabric-internal) and during bootstrap,
+    /// before it's up enough to configure an `ExposedEndpoint` for
+    /// itself. A separate, bootstrap-level concern from
+    /// `crow-provider-vyos`'s NAT rules, which the operator manages per-
+    /// `ExposedEndpoint` at runtime for tenant resources, not the control
+    /// plane itself. Optional: a fabric with no crowCloud instance yet has
+    /// nothing to forward to.
     pub crow_api_mgmt_ip: Option<String>,
     pub crow_api_mgmt_port: Option<u16>,
+    /// Same idea as `crow_api_mgmt_port`, for the web frontend instead of
+    /// the API -- forwarded to the same `crow_api_mgmt_ip` (the frontend
+    /// and API are served from the same node; only the port differs), so
+    /// this alone is enough to reuse that address. Both this and
+    /// `crow_api_mgmt_port` default on together once `crow_api_mgmt_ip`
+    /// is set (see `commands::iso`'s wizard prompts) -- reaching either
+    /// half of the control plane from the LAN implies wanting the other
+    /// reachable too, in the common case.
+    pub crow_frontend_mgmt_port: Option<u16>,
+    /// Admin WireGuard VPN, terminating directly on VyOS -- a different,
+    /// unrelated feature from `crd::networking::TunnelEndpoint`'s
+    /// WireGuard tunnel (that one is for public exposure via a rented
+    /// VPS; this one is admin-only, routing only into the fabric's own
+    /// mgmt/underlay VLANs). All three fields optional together: leave
+    /// unset to skip WireGuard entirely, matching the rest of this
+    /// struct's "omit to leave the feature off" convention.
+    pub wireguard_port: Option<u16>,
+    pub wireguard_address: Option<String>,
+    pub wireguard_address_prefix: Option<u8>,
+    /// From `Config::wireguard_server_key_or_generate` -- generated and
+    /// cached client-side, not something this pure renderer ever creates
+    /// itself (matches `ssh_pubkey` being read from a file by the
+    /// caller, not generated here).
+    pub wireguard_private_key: Option<String>,
 }
 
 pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
@@ -191,29 +218,37 @@ pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
     ));
     lines.push("set nat source rule 100 translation address 'masquerade'".to_string());
 
-    // Forwards the control plane's own port straight through from the
-    // uplink -- rule 200, clear of both the egress rule above (100) and
-    // the 1000+ range crow-provider-vyos's ExposedEndpoint reconciler
-    // uses for its own dynamically-created rules, so the two mechanisms
-    // can never collide on a rule number even though they both write to
-    // the same `nat destination` tree.
-    if let (Some(ip), Some(port)) = (&cfg.crow_api_mgmt_ip, cfg.crow_api_mgmt_port) {
-        lines
-            .push("set nat destination rule 200 description 'crowcloud-control-plane'".to_string());
+    // Forwards the control plane's own ports straight through from the
+    // uplink -- rules 200 (API) and 201 (frontend), clear of both the
+    // egress rule above (100) and the 1000+ range crow-provider-vyos's
+    // ExposedEndpoint reconciler uses for its own dynamically-created
+    // rules, so none of these mechanisms can ever collide on a rule
+    // number even though they all write to the same `nat destination`
+    // tree.
+    let mut push_control_plane_dnat = |rule: u32, description: &str, ip: &str, port: u16| {
         lines.push(format!(
-            "set nat destination rule 200 inbound-interface name '{}'",
+            "set nat destination rule {rule} description '{description}'"
+        ));
+        lines.push(format!(
+            "set nat destination rule {rule} inbound-interface name '{}'",
             cfg.uplink_interface
         ));
-        lines.push("set nat destination rule 200 protocol 'tcp'".to_string());
+        lines.push(format!("set nat destination rule {rule} protocol 'tcp'"));
         lines.push(format!(
-            "set nat destination rule 200 destination port '{port}'"
+            "set nat destination rule {rule} destination port '{port}'"
         ));
         lines.push(format!(
-            "set nat destination rule 200 translation address '{ip}'"
+            "set nat destination rule {rule} translation address '{ip}'"
         ));
         lines.push(format!(
-            "set nat destination rule 200 translation port '{port}'"
+            "set nat destination rule {rule} translation port '{port}'"
         ));
+    };
+    if let (Some(ip), Some(port)) = (&cfg.crow_api_mgmt_ip, cfg.crow_api_mgmt_port) {
+        push_control_plane_dnat(200, "crowcloud-control-plane-api", ip, port);
+    }
+    if let (Some(ip), Some(port)) = (&cfg.crow_api_mgmt_ip, cfg.crow_frontend_mgmt_port) {
+        push_control_plane_dnat(201, "crowcloud-control-plane-frontend", ip, port);
     }
 
     // Confirmed live: jumbo frames on the trunk (fabric) side meet a
@@ -280,6 +315,25 @@ pub fn render_configure_script(cfg: &VyosBuildConfig) -> String {
         cfg.underlay_network, cfg.underlay_network_prefix
     ));
 
+    // Admin WireGuard VPN -- see this field's own doc comment. No peers
+    // rendered here: adding/removing an admin is an ongoing operation
+    // pushed live over SSH afterward (`iso vyos wireguard add-peer`/
+    // `remove-peer`), not part of the one-time server setup.
+    if let (Some(port), Some(address), Some(prefix), Some(private_key)) = (
+        cfg.wireguard_port,
+        &cfg.wireguard_address,
+        cfg.wireguard_address_prefix,
+        &cfg.wireguard_private_key,
+    ) {
+        lines.push(format!(
+            "set interfaces wireguard wg0 address '{address}/{prefix}'"
+        ));
+        lines.push(format!("set interfaces wireguard wg0 port '{port}'"));
+        lines.push(format!(
+            "set interfaces wireguard wg0 private-key '{private_key}'"
+        ));
+    }
+
     lines.push("commit".to_string());
     lines.push("save".to_string());
 
@@ -321,6 +375,11 @@ mod tests {
             allow_password_auth: false,
             crow_api_mgmt_ip: None,
             crow_api_mgmt_port: None,
+            crow_frontend_mgmt_port: None,
+            wireguard_port: None,
+            wireguard_address: None,
+            wireguard_address_prefix: None,
+            wireguard_private_key: None,
         }
     }
 
@@ -442,15 +501,49 @@ mod tests {
     }
 
     #[test]
-    fn omits_the_control_plane_nat_rule_when_not_configured() {
+    fn omits_wireguard_when_not_fully_configured() {
+        // All four fields are required together -- a partially-configured
+        // WireGuard block (e.g. a port but no key) would render an
+        // invalid/incomplete `set` sequence, so it must render nothing at
+        // all until every field is present.
+        let out = render_configure_script(&cfg());
+        assert!(!out.contains("interfaces wireguard"));
+
+        let partial = VyosBuildConfig {
+            wireguard_port: Some(51820),
+            ..cfg()
+        };
+        assert!(!render_configure_script(&partial).contains("interfaces wireguard"));
+    }
+
+    #[test]
+    fn renders_the_wireguard_server_when_fully_configured() {
+        let cfg = VyosBuildConfig {
+            wireguard_port: Some(51820),
+            wireguard_address: Some("10.255.30.1".to_string()),
+            wireguard_address_prefix: Some(24),
+            wireguard_private_key: Some("serverPrivateKeyBase64==".to_string()),
+            ..cfg()
+        };
+        let out = render_configure_script(&cfg);
+        assert!(out.contains("set interfaces wireguard wg0 address '10.255.30.1/24'"));
+        assert!(out.contains("set interfaces wireguard wg0 port '51820'"));
+        assert!(out.contains("set interfaces wireguard wg0 private-key 'serverPrivateKeyBase64=='"));
+        // No peers baked in -- that's pushed live separately.
+        assert!(!out.contains("wg0 peer"));
+    }
+
+    #[test]
+    fn omits_the_control_plane_nat_rules_when_not_configured() {
         // A fabric with no crowCloud instance yet has nothing to forward
         // to -- must not emit a broken/empty NAT rule.
         let out = render_configure_script(&cfg());
         assert!(!out.contains("nat destination rule 200"));
+        assert!(!out.contains("nat destination rule 201"));
     }
 
     #[test]
-    fn forwards_the_control_plane_port_from_the_uplink_when_configured() {
+    fn forwards_the_control_plane_api_port_from_the_uplink_when_configured() {
         // The whole point: reachable from the upstream LAN (e.g. during
         // bootstrap, before it's up enough to configure an
         // ExposedEndpoint for itself) -- separate from and never
@@ -458,15 +551,56 @@ mod tests {
         // (1000+) ExposedEndpoint rules.
         let cfg = VyosBuildConfig {
             crow_api_mgmt_ip: Some("10.255.20.50".to_string()),
-            crow_api_mgmt_port: Some(8080),
+            crow_api_mgmt_port: Some(30081),
             ..cfg()
         };
         let out = render_configure_script(&cfg);
         assert!(out.contains("set nat destination rule 200 inbound-interface name 'eth1'"));
         assert!(out.contains("set nat destination rule 200 protocol 'tcp'"));
-        assert!(out.contains("set nat destination rule 200 destination port '8080'"));
+        assert!(out.contains("set nat destination rule 200 destination port '30081'"));
         assert!(out.contains("set nat destination rule 200 translation address '10.255.20.50'"));
-        assert!(out.contains("set nat destination rule 200 translation port '8080'"));
+        assert!(out.contains("set nat destination rule 200 translation port '30081'"));
+        // Frontend port wasn't set -- must not emit rule 201 on its own.
+        assert!(!out.contains("nat destination rule 201"));
+    }
+
+    #[test]
+    fn forwards_the_control_plane_frontend_port_from_the_uplink_when_configured() {
+        let cfg = VyosBuildConfig {
+            crow_api_mgmt_ip: Some("10.255.20.50".to_string()),
+            crow_frontend_mgmt_port: Some(30080),
+            ..cfg()
+        };
+        let out = render_configure_script(&cfg);
+        assert!(out.contains("set nat destination rule 201 inbound-interface name 'eth1'"));
+        assert!(out.contains("set nat destination rule 201 protocol 'tcp'"));
+        assert!(out.contains("set nat destination rule 201 destination port '30080'"));
+        assert!(out.contains("set nat destination rule 201 translation address '10.255.20.50'"));
+        assert!(out.contains("set nat destination rule 201 translation port '30080'"));
+        // API port wasn't set -- must not emit rule 200 on its own.
+        assert!(!out.contains("nat destination rule 200"));
+    }
+
+    #[test]
+    fn forwards_both_control_plane_ports_when_both_are_configured() {
+        // The normal case: the whole control plane (API + web UI)
+        // reachable from the LAN off the one shared uplink IP, each on
+        // its own rule/port.
+        let cfg = VyosBuildConfig {
+            crow_api_mgmt_ip: Some("10.255.20.50".to_string()),
+            crow_api_mgmt_port: Some(30081),
+            crow_frontend_mgmt_port: Some(30080),
+            ..cfg()
+        };
+        let out = render_configure_script(&cfg);
+        assert!(out.contains("set nat destination rule 200 destination port '30081'"));
+        assert!(out.contains("set nat destination rule 201 destination port '30080'"));
+        assert!(
+            out.contains("set nat destination rule 200 description 'crowcloud-control-plane-api'")
+        );
+        assert!(out.contains(
+            "set nat destination rule 201 description 'crowcloud-control-plane-frontend'"
+        ));
     }
 
     #[test]

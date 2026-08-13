@@ -114,6 +114,10 @@ Branch protection uses bare job names, not "Workflow name / Job name" — so the
 
 `RELEASE_PLZ_TOKEN` secret: a GitHub OAuth token with `repo` scope. Without it the workflow falls back to `GITHUB_TOKEN`, but tags created by `GITHUB_TOKEN` won't trigger `cd_publish.yml`.
 
+### Dev builds
+
+`dev_build.yml` — manual (`workflow_dispatch`), builds and pushes one component's image to GHCR tagged with the triggering commit's short SHA, for iterating against a live fleet without cutting a release. See [`docs/development.md`](docs/development.md) for the full loop (trigger → `helm upgrade` → verify rollout).
+
 ### Security audit
 
 `ci_security.yml` uses `rustsec/audit-check@v2` which needs `checks: write` permission (already set). The RSA advisory RUSTSEC-2023-0071 is currently unpatched — it is ignored in `.cargo/audit.toml`.

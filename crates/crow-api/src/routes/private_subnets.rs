@@ -43,6 +43,7 @@ struct PrivateSubnetDetail {
     vni: u32,
     gateway: String,
     dns: Vec<String>,
+    snat: bool,
     bridge: Option<String>,
     ip_pool_ref: Option<String>,
     phase: Option<String>,
@@ -76,6 +77,7 @@ impl From<PrivateSubnet> for PrivateSubnetDetail {
             vni: subnet.spec.vni,
             gateway: subnet.spec.gateway,
             dns: subnet.spec.dns,
+            snat: subnet.spec.snat,
             bridge: status.bridge,
             ip_pool_ref: status.ip_pool_ref,
             phase: status.phase,
@@ -109,6 +111,8 @@ struct CreateSubnetRequest {
     gateway: String,
     #[serde(default)]
     dns: Vec<String>,
+    #[serde(default)]
+    snat: bool,
 }
 
 async fn create(
@@ -136,6 +140,7 @@ async fn create(
             vni: req.vni,
             gateway: req.gateway.clone(),
             dns: req.dns.clone(),
+            snat: req.snat,
         },
         status: None,
     };

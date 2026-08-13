@@ -60,6 +60,12 @@ pub struct FabricConfigureArgs {
     pub bgp_route_reflector_ip: Option<String>,
     #[arg(long, value_delimiter = ',')]
     pub dns_servers: Option<Vec<String>>,
+    /// Subnet for admin WireGuard VPN peers -- leave unset if you don't
+    /// want VyOS's WireGuard server configured at all
+    #[arg(long)]
+    pub wireguard_network: Option<String>,
+    #[arg(long)]
+    pub wireguard_network_prefix: Option<u8>,
 }
 
 #[derive(Args)]
@@ -78,6 +84,71 @@ pub enum VyosSubcommand {
     /// needs one interactive `install image` session per box; this
     /// automates the fabric-config step that comes after that
     Apply(VyosApplyArgs),
+    /// Manage admin WireGuard VPN peers on a live VyOS device -- separate
+    /// from `build`/`apply` since adding/removing an admin is an ongoing
+    /// operation, not a one-time server setup
+    Wireguard(WireguardCmd),
+}
+
+#[derive(Args)]
+pub struct WireguardCmd {
+    #[command(subcommand)]
+    pub command: WireguardSubcommand,
+}
+
+#[derive(Subcommand)]
+pub enum WireguardSubcommand {
+    /// Add an admin as a WireGuard peer -- generates their client
+    /// keypair locally (the private key never leaves this machine) and
+    /// pushes only the public key to VyOS
+    AddPeer(WireguardAddPeerArgs),
+    /// Remove an admin's WireGuard peer
+    RemovePeer(WireguardRemovePeerArgs),
+}
+
+#[derive(Args)]
+pub struct WireguardAddPeerArgs {
+    /// Name for this peer (e.g. the admin's own name) -- must be unique
+    /// on this VyOS device
+    pub name: String,
+    /// This admin's own VPN tunnel address -- an IP inside the fabric's
+    /// wireguard_network. No allocator exists yet, same "pick one by
+    /// hand" posture underlay_ip/mgmt_ip already have for hosts.
+    #[arg(long)]
+    pub client_address: String,
+    /// VyOS's uplink IP or hostname, reachable from this machine
+    #[arg(long)]
+    pub host: String,
+    #[arg(long, default_value_t = 22)]
+    pub port: u16,
+    #[arg(long, default_value = "vyos")]
+    pub user: String,
+    /// Private key matching the public key baked into the image via
+    /// `iso vyos build --ssh-pubkey`
+    #[arg(long)]
+    pub ssh_key: PathBuf,
+    #[arg(long)]
+    pub insecure_skip_host_key_check: bool,
+    /// VyOS's WireGuard listen port -- must match what `iso vyos build`
+    /// configured
+    #[arg(long, default_value_t = 51820)]
+    pub wireguard_port: u16,
+}
+
+#[derive(Args)]
+pub struct WireguardRemovePeerArgs {
+    pub name: String,
+    /// VyOS's uplink IP or hostname, reachable from this machine
+    #[arg(long)]
+    pub host: String,
+    #[arg(long, default_value_t = 22)]
+    pub port: u16,
+    #[arg(long, default_value = "vyos")]
+    pub user: String,
+    #[arg(long)]
+    pub ssh_key: PathBuf,
+    #[arg(long)]
+    pub insecure_skip_host_key_check: bool,
 }
 
 #[derive(Args)]
@@ -181,18 +252,33 @@ pub struct VyosFlavorArgs {
     #[arg(long)]
     pub allow_password_auth: Option<bool>,
     /// crowCloud control plane's mgmt-VLAN IP -- when set together with
-    /// --crow-api-mgmt-port, bakes in a NAT rule forwarding that same
-    /// port on the uplink straight to it, so the control plane is
-    /// reachable from the upstream LAN (e.g. during bootstrap, before
-    /// it's up enough to configure an ExposedEndpoint for itself).
-    /// Leave both unset if there's no crowCloud instance on this fabric
-    /// yet.
-    #[arg(long, requires = "crow_api_mgmt_port")]
+    /// --crow-api-mgmt-port and/or --crow-frontend-mgmt-port, bakes in a
+    /// NAT rule per port forwarding it from the uplink straight to this
+    /// IP, so the control plane is reachable from the upstream LAN (both
+    /// on an ongoing basis for admin/CLI access, and during bootstrap,
+    /// before it's up enough to configure an ExposedEndpoint for itself).
+    /// Leave unset if there's no crowCloud instance on this fabric yet.
+    #[arg(long)]
     pub crow_api_mgmt_ip: Option<String>,
     #[arg(long, requires = "crow_api_mgmt_ip")]
     pub crow_api_mgmt_port: Option<u16>,
-    /// Directory to write the rendered fabric-init script, cron entry,
-    /// and vyos-build flavor TOML into
+    /// Same idea as --crow-api-mgmt-port, for the web frontend -- forwarded
+    /// to the same --crow-api-mgmt-ip (frontend and API are served from
+    /// the same node)
+    #[arg(long, requires = "crow_api_mgmt_ip")]
+    pub crow_frontend_mgmt_port: Option<u16>,
+    /// Enables VyOS's admin WireGuard VPN server -- leave all three
+    /// wireguard-* flags unset to skip it entirely. Falls back to the
+    /// fabric config's wireguard_network/wireguard_network_prefix if
+    /// omitted.
+    #[arg(long)]
+    pub wireguard_port: Option<u16>,
+    #[arg(long)]
+    pub wireguard_address: Option<String>,
+    #[arg(long)]
+    pub wireguard_address_prefix: Option<u8>,
+    /// Directory to write the rendered fabric-init script and
+    /// vyos-build flavor TOML into
     #[arg(long, default_value = "./build")]
     pub out: PathBuf,
 }
@@ -291,16 +377,31 @@ pub struct VyosBuildArgs {
     #[arg(long)]
     pub allow_password_auth: Option<bool>,
     /// crowCloud control plane's mgmt-VLAN IP -- when set together with
-    /// --crow-api-mgmt-port, bakes in a NAT rule forwarding that same
-    /// port on the uplink straight to it, so the control plane is
-    /// reachable from the upstream LAN (e.g. during bootstrap, before
-    /// it's up enough to configure an ExposedEndpoint for itself).
-    /// Leave both unset if there's no crowCloud instance on this fabric
-    /// yet.
-    #[arg(long, requires = "crow_api_mgmt_port")]
+    /// --crow-api-mgmt-port and/or --crow-frontend-mgmt-port, bakes in a
+    /// NAT rule per port forwarding it from the uplink straight to this
+    /// IP, so the control plane is reachable from the upstream LAN (both
+    /// on an ongoing basis for admin/CLI access, and during bootstrap,
+    /// before it's up enough to configure an ExposedEndpoint for itself).
+    /// Leave unset if there's no crowCloud instance on this fabric yet.
+    #[arg(long)]
     pub crow_api_mgmt_ip: Option<String>,
     #[arg(long, requires = "crow_api_mgmt_ip")]
     pub crow_api_mgmt_port: Option<u16>,
+    /// Same idea as --crow-api-mgmt-port, for the web frontend -- forwarded
+    /// to the same --crow-api-mgmt-ip (frontend and API are served from
+    /// the same node)
+    #[arg(long, requires = "crow_api_mgmt_ip")]
+    pub crow_frontend_mgmt_port: Option<u16>,
+    /// Enables VyOS's admin WireGuard VPN server -- leave all three
+    /// wireguard-* flags unset to skip it entirely. Falls back to the
+    /// fabric config's wireguard_network/wireguard_network_prefix if
+    /// omitted.
+    #[arg(long)]
+    pub wireguard_port: Option<u16>,
+    #[arg(long)]
+    pub wireguard_address: Option<String>,
+    #[arg(long)]
+    pub wireguard_address_prefix: Option<u8>,
     /// Directory to write the rendered configure-script into
     #[arg(long, default_value = "./build")]
     pub out: PathBuf,
@@ -439,6 +540,10 @@ pub async fn run(cmd: IsoCmd) -> Result<()> {
                 VyosBuildSubcommand::Image(args) => flavor_vyos(*args),
             },
             VyosSubcommand::Apply(args) => apply_vyos(args).await,
+            VyosSubcommand::Wireguard(wg_cmd) => match wg_cmd.command {
+                WireguardSubcommand::AddPeer(args) => add_wireguard_peer(args).await,
+                WireguardSubcommand::RemovePeer(args) => remove_wireguard_peer(args).await,
+            },
         },
         IsoSubcommand::Proxmox(proxmox_cmd) => match proxmox_cmd.command {
             ProxmoxSubcommand::Build(args) => build_proxmox(args),
@@ -527,6 +632,23 @@ fn fabric_configure(args: FabricConfigureArgs) -> Result<()> {
         "DNS forwarders for mgmt-VLAN hosts (comma-separated)",
         Some(&["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
     )?;
+    let wireguard_network = wiz::prompt_optional(
+        args.wireguard_network
+            .or(existing.as_ref().and_then(|f| f.wireguard_network.clone())),
+        "Subnet for admin WireGuard VPN peers (leave blank to skip VPN entirely)",
+    )?;
+    let wireguard_network_prefix = if wireguard_network.is_some() {
+        Some(wiz::prompt(
+            args.wireguard_network_prefix,
+            "WireGuard VPN subnet prefix length",
+            existing
+                .as_ref()
+                .and_then(|f| f.wireguard_network_prefix)
+                .or(Some(24)),
+        )?)
+    } else {
+        None
+    };
 
     let mut cfg = Config::load()?;
     cfg.fabric = Some(FabricConfig {
@@ -543,6 +665,8 @@ fn fabric_configure(args: FabricConfigureArgs) -> Result<()> {
         bgp_peer_password,
         bgp_route_reflector_ip,
         dns_servers,
+        wireguard_network,
+        wireguard_network_prefix,
     });
     cfg.save()?;
 
@@ -577,6 +701,147 @@ async fn apply_vyos(args: VyosApplyArgs) -> Result<()> {
     crate::iso::vyos_apply::apply(&cfg).await?;
     println!("Applied and saved.");
     Ok(())
+}
+
+/// Directory local per-admin WireGuard private keys are cached in --
+/// alongside `Config::path()` itself, not under `--out` (a typically
+/// throwaway/rebuildable build directory): losing a client private key
+/// means that admin has to be re-added from scratch, so it belongs with
+/// the other persistent local secrets this CLI already caches
+/// (`fleet_secret`, the WireGuard server key).
+fn wireguard_client_key_dir() -> Result<PathBuf> {
+    let dir = Config::path()
+        .parent()
+        .context("Config::path() must have a parent directory")?
+        .join("wireguard");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+async fn add_wireguard_peer(args: WireguardAddPeerArgs) -> Result<()> {
+    let cfg = Config::load()?;
+    let fabric = cfg.fabric.as_ref().context(
+        "no fabric config found -- run `crow iso fabric-configure` first, so this command \
+         knows which networks (mgmt/underlay) to route through the tunnel",
+    )?;
+    let server_private_key = cfg.wireguard_server_private_key.clone().context(
+        "no WireGuard server key cached locally -- run `crow iso vyos build` with \
+         --wireguard-address set first (on this machine, or copy its \
+         ~/.config/crow/config.json here)",
+    )?;
+
+    let client_private_key = crate::iso::wireguard::genkey()?;
+    let client_public_key = crate::iso::wireguard::pubkey(&client_private_key)?;
+    let key_path = wireguard_client_key_dir()?.join(format!("{}.key", args.name));
+    std::fs::write(&key_path, &client_private_key)?;
+    println!("Wrote {} (keep this private)", key_path.display());
+
+    let commands = crate::iso::wireguard::render_add_peer(
+        &args.name,
+        &client_public_key,
+        &args.client_address,
+    );
+    let apply_cfg = crate::iso::vyos_apply::VyosApplyConfig {
+        host: args.host.clone(),
+        port: args.port,
+        user: args.user,
+        ssh_key: args.ssh_key,
+        commands,
+        strict_host_key_checking: !args.insecure_skip_host_key_check,
+    };
+    crate::iso::vyos_apply::apply(&apply_cfg).await?;
+    println!("Pushed peer '{}' to VyOS.", args.name);
+
+    let server_public_key = crate::iso::wireguard::pubkey(&server_private_key)?;
+    println!(
+        "\nClient config for '{name}' -- save as {name}.conf and `wg-quick up ./{name}.conf`:\n\n\
+         [Interface]\n\
+         PrivateKey = {client_private_key}\n\
+         Address = {client_address}/32\n\
+         \n\
+         [Peer]\n\
+         PublicKey = {server_public_key}\n\
+         Endpoint = {host}:{wireguard_port}\n\
+         AllowedIPs = {mgmt_network}/{mgmt_prefix},{underlay_network}/{underlay_prefix}\n\
+         PersistentKeepalive = 25",
+        name = args.name,
+        client_address = args.client_address,
+        host = args.host,
+        wireguard_port = args.wireguard_port,
+        mgmt_network = fabric.mgmt_network,
+        mgmt_prefix = fabric.mgmt_network_prefix,
+        underlay_network = fabric.underlay_network,
+        underlay_prefix = fabric.underlay_network_prefix,
+    );
+    Ok(())
+}
+
+async fn remove_wireguard_peer(args: WireguardRemovePeerArgs) -> Result<()> {
+    let commands = crate::iso::wireguard::render_remove_peer(&args.name);
+    let apply_cfg = crate::iso::vyos_apply::VyosApplyConfig {
+        host: args.host,
+        port: args.port,
+        user: args.user,
+        ssh_key: args.ssh_key,
+        commands,
+        strict_host_key_checking: !args.insecure_skip_host_key_check,
+    };
+    crate::iso::vyos_apply::apply(&apply_cfg).await?;
+    println!(
+        "Removed peer '{}' from VyOS. Its local private key file (if any, under {}) \
+         was left in place -- delete it by hand if you're sure it's no longer needed.",
+        args.name,
+        wireguard_client_key_dir()?.display()
+    );
+    Ok(())
+}
+
+/// Shared by `build_vyos` and `flavor_vyos` -- both need the exact same
+/// prompts, plus generating/caching the server key and printing its
+/// public half, so unlike the smaller two-field mgmt-port blocks nearby
+/// this is a real shared helper rather than duplicated inline.
+/// `address` presence after prompting is what enables WireGuard at all
+/// (matches `crow_api_mgmt_ip`'s own "leave blank to skip" convention);
+/// `Ok((None, None, None, None))` means skipped.
+#[allow(clippy::type_complexity)]
+fn resolve_wireguard_config(
+    port: Option<u16>,
+    address: Option<String>,
+    address_prefix: Option<u8>,
+    fabric: Option<&FabricConfig>,
+) -> Result<(Option<u16>, Option<String>, Option<u8>, Option<String>)> {
+    use crate::iso::vyos_wizard as wiz;
+
+    let network_hint = fabric
+        .and_then(|f| f.wireguard_network.as_ref())
+        .map(|n| format!(" (fabric's configured VPN subnet: {n})"))
+        .unwrap_or_default();
+    let address = wiz::prompt_optional(
+        address,
+        &format!(
+            "WireGuard VPN server address, this router's own{network_hint} -- leave blank to \
+             skip admin VPN access entirely"
+        ),
+    )?;
+    let Some(address) = address else {
+        return Ok((None, None, None, None));
+    };
+
+    let port = wiz::prompt(port, "WireGuard VPN listen port", Some(51820))?;
+    let prefix = wiz::prompt(
+        address_prefix,
+        "WireGuard VPN subnet prefix length",
+        fabric.and_then(|f| f.wireguard_network_prefix).or(Some(24)),
+    )?;
+
+    let private_key = Config::wireguard_server_key_or_generate()?;
+    let public_key = crate::iso::wireguard::pubkey(&private_key)?;
+    println!(
+        "WireGuard server public key (needed for every `iso vyos wireguard add-peer` \
+         client config): {public_key}"
+    );
+
+    Ok((Some(port), Some(address), Some(prefix), Some(private_key)))
 }
 
 fn build_vyos(args: VyosBuildArgs) -> Result<()> {
@@ -747,17 +1012,35 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
     )?;
     let crow_api_mgmt_ip = wiz::prompt_optional(
         args.crow_api_mgmt_ip,
-        "crowCloud control plane mgmt IP (leave blank if none yet -- skips the forwarding rule entirely)",
+        "crowCloud control plane mgmt IP (leave blank if none yet -- skips both forwarding rules below entirely)",
     )?;
     let crow_api_mgmt_port = if crow_api_mgmt_ip.is_some() {
         Some(wiz::prompt(
             args.crow_api_mgmt_port,
-            "crowCloud control plane port",
-            Some(8080),
+            "crowCloud API port to forward from the uplink -- the Helm \
+             chart's default API NodePort is 30081, not the API container's own internal 8080",
+            Some(30081),
         )?)
     } else {
         None
     };
+    let crow_frontend_mgmt_port = if crow_api_mgmt_ip.is_some() {
+        Some(wiz::prompt(
+            args.crow_frontend_mgmt_port,
+            "crowCloud web frontend port to forward from the uplink -- the Helm chart's default \
+             frontend NodePort is 30080",
+            Some(30080),
+        )?)
+    } else {
+        None
+    };
+    let (wireguard_port, wireguard_address, wireguard_address_prefix, wireguard_private_key) =
+        resolve_wireguard_config(
+            args.wireguard_port,
+            args.wireguard_address,
+            args.wireguard_address_prefix,
+            fabric.as_ref(),
+        )?;
 
     let cfg = vyos_iso::VyosBuildConfig {
         hostname,
@@ -789,6 +1072,11 @@ fn build_vyos(args: VyosBuildArgs) -> Result<()> {
         allow_password_auth,
         crow_api_mgmt_ip,
         crow_api_mgmt_port,
+        crow_frontend_mgmt_port,
+        wireguard_port,
+        wireguard_address,
+        wireguard_address_prefix,
+        wireguard_private_key,
     };
 
     std::fs::create_dir_all(&args.out)?;
@@ -977,17 +1265,35 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
     )?;
     let crow_api_mgmt_ip = wiz::prompt_optional(
         args.crow_api_mgmt_ip,
-        "crowCloud control plane mgmt IP (leave blank if none yet -- skips the forwarding rule entirely)",
+        "crowCloud control plane mgmt IP (leave blank if none yet -- skips both forwarding rules below entirely)",
     )?;
     let crow_api_mgmt_port = if crow_api_mgmt_ip.is_some() {
         Some(wiz::prompt(
             args.crow_api_mgmt_port,
-            "crowCloud control plane port",
-            Some(8080),
+            "crowCloud API port to forward from the uplink -- the Helm \
+             chart's default API NodePort is 30081, not the API container's own internal 8080",
+            Some(30081),
         )?)
     } else {
         None
     };
+    let crow_frontend_mgmt_port = if crow_api_mgmt_ip.is_some() {
+        Some(wiz::prompt(
+            args.crow_frontend_mgmt_port,
+            "crowCloud web frontend port to forward from the uplink -- the Helm chart's default \
+             frontend NodePort is 30080",
+            Some(30080),
+        )?)
+    } else {
+        None
+    };
+    let (wireguard_port, wireguard_address, wireguard_address_prefix, wireguard_private_key) =
+        resolve_wireguard_config(
+            args.wireguard_port,
+            args.wireguard_address,
+            args.wireguard_address_prefix,
+            fabric.as_ref(),
+        )?;
 
     let cfg = vyos_flavor_iso::VyosFlavorConfig {
         base: vyos_iso::VyosBuildConfig {
@@ -1022,6 +1328,11 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
             allow_password_auth,
             crow_api_mgmt_ip,
             crow_api_mgmt_port,
+            crow_frontend_mgmt_port,
+            wireguard_port,
+            wireguard_address,
+            wireguard_address_prefix,
+            wireguard_private_key,
         },
     };
 
@@ -1031,13 +1342,10 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
         &script_path,
         vyos_flavor_iso::render_fabric_init_script(&cfg),
     )?;
-    let cron_path = args.out.join("crowcloud-fabric-init.cron");
-    std::fs::write(&cron_path, vyos_flavor_iso::render_cron_entry())?;
     let flavor_path = args.out.join("crowcloud.toml");
     std::fs::write(&flavor_path, vyos_flavor_iso::render_flavor_toml(&cfg))?;
 
     println!("Wrote {}", script_path.display());
-    println!("Wrote {}", cron_path.display());
     println!("Wrote {}", flavor_path.display());
     println!(
         "\nTo build the ISO, run (requires Docker with privileged-container support):\n\
@@ -1046,7 +1354,14 @@ fn flavor_vyos(args: VyosFlavorArgs) -> Result<()> {
          cp {flavor} vyos-build/data/build-flavors/crowcloud.toml\n\
          cd vyos-build\n\
          docker run --rm -it --privileged -v $(pwd):/vyos -w /vyos vyos/vyos-build:rolling \\\n\
-         \x20 sudo ./build-vyos-image --architecture amd64 --build-by crowcloud crowcloud",
+         \x20 sudo ./build-vyos-image --architecture amd64 --build-by crowcloud crowcloud\n\
+         \n\
+         Nothing runs this automatically -- once the built image is installed and \
+         the box is up, SSH in and run it by hand (it's baked in with no execute \
+         bit, so invoke it via `bash`, not `./`):\n\
+         \n\
+         \x20 ssh vyos@<box>\n\
+         \x20 sudo bash /usr/local/bin/crowcloud-fabric-init.sh",
         flavor = flavor_path.display()
     );
 
@@ -1261,23 +1576,18 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
     if which("proxmox-auto-install-assistant").is_none() {
         println!(
             "proxmox-auto-install-assistant not found on PATH -- skipping \
-             image build. Install it and re-run, or use {} and {} manually.",
+             image build. Install it and re-run, or use {} manually.",
             answer_path.display(),
-            hook_path.display()
         );
         return Ok(());
     }
 
     let output_iso = args.out.join("proxmox-auto.iso");
-    // `--on-first-boot` bundles a script that PVE 8.1+'s auto-install
-    // runs once, automatically, on the installed system's first boot --
-    // this is what makes a single USB stick self-contained end to end
-    // (base install + fabric setup + self-registration), no manual
-    // delivery step after install. NOTE: exact flag name/behavior is
-    // not verified against a live `proxmox-auto-install-assistant` in
-    // this environment (not installed here) -- if this errors as an
-    // unrecognized flag, that's the first thing to check against
-    // whatever version is actually installed.
+    // No `--on-first-boot` -- it didn't reliably fire in practice, so
+    // the post-install hook is no longer bundled as an automatic
+    // first-boot step (see `proxmox::render_answer_toml`'s doc comment).
+    // This ISO only automates the base install; `hook_path` still needs
+    // to be copied onto the box and run by hand afterward.
     let status = Command::new("proxmox-auto-install-assistant")
         .arg("prepare-iso")
         .arg(&base_iso)
@@ -1285,8 +1595,6 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
         .arg("iso")
         .arg("--answer-file")
         .arg(&answer_path)
-        .arg("--on-first-boot")
-        .arg(&hook_path)
         .arg("--output")
         .arg(&output_iso)
         .status()
@@ -1298,10 +1606,13 @@ fn build_proxmox(args: ProxmoxBuildArgs) -> Result<()> {
 
     println!("Built {}", output_iso.display());
     println!(
-        "This ISO is fully self-contained -- boot it from USB and the \
-         installed system applies fabric config and self-registers on \
-         its own first boot, no manual delivery of {} required.",
-        hook_path.display()
+        "This ISO automates the base install only. Once it's up, copy {} \
+         onto the box and run it by hand over SSH:\n\
+         \x20   scp {} root@<box>:/root/\n\
+         \x20   ssh root@<box> bash /root/{}",
+        hook_path.display(),
+        hook_path.display(),
+        hook_path.file_name().unwrap().to_string_lossy()
     );
     Ok(())
 }

@@ -67,6 +67,16 @@ pub struct NetworkSpec {
     /// VLAN tag (cross-node tenant networks need to ride the fabric's
     /// existing underlay/EVPN routing, not a second physical trunk VLAN).
     pub vni: u32,
+    /// Mirrors `crd::networking::PrivateSubnetSpec.gateway` -- only
+    /// consulted when `snat` is true (creating a real gateway/NAT for a
+    /// subnet nobody asked to be routable is pointless surface area).
+    pub gateway: Option<String>,
+    /// When true, the provider also gives this network a real L3 gateway
+    /// with outbound NAT (Proxmox SDN's own EVPN zone `Subnet` object +
+    /// zone `exit-nodes`, for the Proxmox provider) instead of staying
+    /// pure L2. Opt-in: most tenant subnets so far have had no reason to
+    /// reach the internet at all.
+    pub snat: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +115,26 @@ pub struct ExposeHandle {
     pub provider_id: String,
     pub domain: Option<String>,
     pub public_port: Option<u16>,
+}
+
+/// A reserved address on the network `NetworkProvider`'s uplink sits on
+/// (not necessarily internet-routable -- see `crd::networking::PublicIpSpec`),
+/// forwarding *all* traffic to it straight through to one private target.
+/// Deliberately no port/protocol fields -- unlike `TcpExposeSpec`, which
+/// exposes one port at a time, this is a full address-to-address (1:1)
+/// NAT, the mechanism behind `crd::networking::PublicIp`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReserveIpSpec {
+    pub address: IpAddr,
+    pub prefix: u8,
+    pub target_ip: IpAddr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReserveIpHandle {
+    pub provider_id: String,
+    pub address: IpAddr,
+    pub prefix: u8,
 }
 
 // --- TLS ---
