@@ -507,7 +507,7 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "crow-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -534,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "crow-auth"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "crow-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -573,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "crow-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "crow-db"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "crow-operator"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "crow-provider-hetzner"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "crow-core",
@@ -640,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "crow-provider-proxmox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "crow-core",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "crow-provider-registry"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crow-core",
  "crow-db",
@@ -670,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "crow-provider-vyos"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "crow-core",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "crow-resource-database"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "crow-core",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "crow-resource-k8s"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "crow-core",
@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "crow-resource-objectstore"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "crow-core",
@@ -720,7 +720,7 @@ dependencies = [
 
 [[package]]
 name = "crow-resource-vm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "crow-core",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "crow-vps-agent"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "crow-vyos-ssh"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "tokio",
